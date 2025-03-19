@@ -68,16 +68,20 @@ export default function Dashboard() {
     queryFn: async () => {
       const [
         clientsResult, 
+        activeClientsResult,
         vendorsResult, 
         tasksResult, 
+        laborsResult,
         paymentsResult, 
         recentTasksResult,
         contractsResult,
         clientContractsAmount
       ] = await Promise.all([
         supabase.from('clients').select('count', { count: 'exact' }).single(),
+        supabase.from('clients').select('count', { count: 'exact' }).eq('status', 'active').single(),
         supabase.from('vendors').select('count', { count: 'exact' }).single(),
         supabase.from('tasks').select('count', { count: 'exact' }).single(),
+        supabase.from('labors').select('count', { count: 'exact' }).single(),
         supabase.from('payments').select('*').order('date', { ascending: false }),
         supabase
           .from('tasks')
@@ -148,8 +152,10 @@ export default function Dashboard() {
 
       return {
         totalClients: clientsResult.data?.count || 0,
+        activeClients: activeClientsResult.data?.count || 0,
         totalVendors: vendorsResult.data?.count || 0,
         totalTasks: tasksResult.data?.count || 0,
+        totalLabors: laborsResult.data?.count || 0,
         totalPayments: paymentsResult.data?.reduce((acc, curr) => acc + Number(curr.amount), 0) || 0,
         recentTasks: recentTasksResult.data || [],
         paymentTrends,
@@ -206,11 +212,25 @@ export default function Dashboard() {
             icon={Users}
           />
         </Link>
+        <Link href="/clients">
+          <StatsCard
+            title="Active Clients"
+            value={stats?.activeClients || 0}
+            icon={Users}
+          />
+        </Link>
         <Link href="/vendors">
           <StatsCard
             title="Total Vendors"
             value={stats?.totalVendors || 0}
             icon={Truck}
+          />
+        </Link>
+        <Link href="/labors">
+          <StatsCard
+            title="Total Labors"
+            value={stats?.totalLabors || 0}
+            icon={Users}
           />
         </Link>
         <StatsCard
