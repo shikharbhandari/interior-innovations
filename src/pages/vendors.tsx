@@ -364,9 +364,8 @@ export default function Vendors() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Phone</TableHead>
                 <TableHead>Category</TableHead>
+                <TableHead>Phone</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
@@ -379,9 +378,8 @@ export default function Vendors() {
                       {vendor.name}
                     </Link>
                   </TableCell>
-                  <TableCell>{vendor.email}</TableCell>
-                  <TableCell>{vendor.phone}</TableCell>
                   <TableCell>{vendor.category}</TableCell>
+                  <TableCell>{vendor.phone}</TableCell>
                   <TableCell>
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                       vendor.status === 'active'

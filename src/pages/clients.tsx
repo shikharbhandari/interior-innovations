@@ -205,6 +205,20 @@ export default function Clients() {
     }
   });
 
+  const { data } = useQuery({
+    queryKey: ['payments'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('payments')
+        .select('*')
+      
+      if (error) throw error;
+      return data;
+    }
+  });
+
+  console.log(data);
+
   const onSubmit = (values: InsertClient) => {
     if (editingClient) {
       updateMutation.mutate(values);
@@ -424,9 +438,9 @@ export default function Clients() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Email</TableHead>
                 <TableHead>Phone</TableHead>
                 <TableHead>Contract Amount</TableHead>
+                <TableHead>Pending Amount</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
@@ -439,9 +453,11 @@ export default function Clients() {
                   onClick={() => handleViewDetails(client.id)}
                 >
                   <TableCell>{client.name}</TableCell>
-                  <TableCell>{client.email}</TableCell>
                   <TableCell>{client.phone}</TableCell>
                   <TableCell>₹{client.contract_amount?.toLocaleString()}</TableCell>
+                  <TableCell>₹{Number(client.contract_amount || 0) - (data || [])
+                                              .filter(p => p.client_id === client.id)
+                                              .reduce((pSum, p) => pSum + Number(p.amount), 0)}</TableCell>
                   <TableCell>
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                       client.status === 'active'

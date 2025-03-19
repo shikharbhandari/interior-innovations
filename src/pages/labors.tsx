@@ -369,8 +369,8 @@ export default function Labors() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Phone</TableHead>
                 <TableHead>Specialization</TableHead>
+                <TableHead>Phone</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
@@ -383,8 +383,8 @@ export default function Labors() {
                       {labor.name}
                     </Link>
                   </TableCell>
-                  <TableCell>{labor.phone}</TableCell>
                   <TableCell>{labor.specialization}</TableCell>
+                  <TableCell>{labor.phone}</TableCell>
                   <TableCell>
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                       labor.status === 'active'
