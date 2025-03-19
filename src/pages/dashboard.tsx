@@ -72,7 +72,8 @@ export default function Dashboard() {
         tasksResult, 
         paymentsResult, 
         recentTasksResult,
-        contractsResult
+        contractsResult,
+        clientContractsAmount
       ] = await Promise.all([
         supabase.from('clients').select('count', { count: 'exact' }).single(),
         supabase.from('vendors').select('count', { count: 'exact' }).single(),
@@ -97,6 +98,11 @@ export default function Dashboard() {
               amount,
               type
             )
+          `),
+        supabase
+          .from('clients')
+          .select(`
+            *
           `)
       ]);
 
@@ -115,16 +121,15 @@ export default function Dashboard() {
       }, 0);
 
       // Calculate client amounts for all contracts
-      const totalClientAmount = contracts.reduce((sum, contract) => 
+      const totalClientAmount = (clientContractsAmount?.data ?? []).reduce((sum, contract) => 
         sum + Number(contract.contract_amount), 0);
 
       // Calculate pending client amounts for all contracts
-      const pendingClientAmount = contracts.reduce((sum, contract) => {
-        const paidAmount = (contract.payments || [])
-          .filter(p => p.type === 'client')
+      const paidAmount = (paymentsResult.data || [])
+        .filter(p => !p.contract_id)
           .reduce((pSum, p) => pSum + Number(p.amount), 0);
-        return sum + (Number(contract.contract_amount) - paidAmount);
-      }, 0);
+      const pendingClientAmount = totalClientAmount - paidAmount
+        
 
       // Process payment trends
       const trends = paymentsResult.data?.reduce((acc: any, payment) => {

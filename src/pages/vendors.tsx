@@ -53,14 +53,6 @@ import {
 } from "@/components/ui/pagination";
 import { insertVendorSchema, type Vendor, type InsertVendor } from "@/lib/schema";
 
-const VENDOR_CATEGORIES = [
-  "Furniture",
-  "Lighting",
-  "Flooring",
-  "Paint",
-  "Decor",
-  "Other"
-] as const;
 
 const ITEMS_PER_PAGE = 7;
 
@@ -112,7 +104,7 @@ export default function Vendors() {
       name: '',
       email: '',
       phone: '',
-      category: 'Other',
+      category: '',
       status: 'active',
     }
   });
@@ -233,7 +225,7 @@ export default function Vendors() {
                 name: '',
                 email: '',
                 phone: '',
-                category: 'Other',
+                category: '',
                 status: 'active',
               });
             }}>
@@ -294,23 +286,9 @@ export default function Vendors() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Category</FormLabel>
-                      <Select
-                        onValueChange={field.onChange}
-                        defaultValue={field.value}
-                      >
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select a category" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {VENDOR_CATEGORIES.map((category) => (
-                            <SelectItem key={category} value={category}>
-                              {category}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <Input {...field} />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
