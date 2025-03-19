@@ -1,7 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams } from "wouter";
 import { supabase } from "@/lib/supabase";
 import { format } from "date-fns";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useToast } from "@/hooks/use-toast";
+import { z } from "zod";
+import { queryClient } from "@/lib/queryClient";
 
 import {
   Card,
@@ -17,9 +23,38 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Pencil } from "lucide-react";
+
+// Payment edit form schema
+const editPaymentSchema = z.object({
+  amount: z.string().min(1, "Amount is required"),
+  date: z.string().min(1, "Date is required"),
+  description: z.string().optional(),
+});
+
+type EditPaymentForm = z.infer<typeof editPaymentSchema>;
 
 export default function ContractDetails() {
   const { id } = useParams();
+  const { toast } = useToast();
+  const [editPayment, setEditPayment] = useState<unknown>(null);
 
   const { data: contract, isLoading } = useQuery({
     queryKey: ['contract', id],
@@ -61,6 +96,63 @@ export default function ContractDetails() {
       return data;
     }
   });
+
+  const form = useForm<EditPaymentForm>({
+    resolver: zodResolver(editPaymentSchema),
+    defaultValues: {
+      amount: "",
+      date: "",
+      description: "",
+    }
+  });
+
+  const updatePaymentMutation = useMutation({
+    mutationFn: async (data: EditPaymentForm & { paymentId: number }) => {
+      const { error } = await supabase
+        .from('payments')
+        .update({
+          amount: parseFloat(data.amount),
+          date: data.date,
+          description: data.description || null,
+        })
+        .eq('id', data.paymentId);
+
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['contract', id] });
+      setEditPayment(null);
+      toast({
+        title: "Success",
+        description: "Payment updated successfully",
+      });
+      form.reset();
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: `Failed to update payment: ${error.message}`,
+      });
+    },
+  });
+
+  const handleEditPayment = (payment: any) => {
+    setEditPayment(payment);
+    form.reset({
+      amount: payment.amount.toString(),
+      date: format(new Date(payment.date), 'yyyy-MM-dd'),
+      description: payment.description || "",
+    });
+  };
+
+  const onSubmit = (values: EditPaymentForm) => {
+    if (!editPayment) return;
+    updatePaymentMutation.mutate({
+      ...values,
+      paymentId: editPayment.id,
+    });
+  };
 
   if (isLoading) {
     return <div className="p-6">Loading...</div>;
@@ -180,6 +272,7 @@ export default function ContractDetails() {
                 <TableHead>Amount</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Description</TableHead>
+                <TableHead className="w-[100px]">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -197,12 +290,90 @@ export default function ContractDetails() {
                     </span>
                   </TableCell>
                   <TableCell>{payment.description}</TableCell>
+                  <TableCell>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleEditPayment(payment)}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog open={!!editPayment} onOpenChange={(open) => !open && setEditPayment(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Payment</DialogTitle>
+            <DialogDescription>
+              Update the payment details below.
+            </DialogDescription>
+          </DialogHeader>
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              <FormField
+                control={form.control}
+                name="amount"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Amount</FormLabel>
+                    <FormControl>
+                      <Input {...field} type="number" step="0.01" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="date"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Date</FormLabel>
+                    <FormControl>
+                      <Input {...field} type="date" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="description"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Description</FormLabel>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <div className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setEditPayment(null)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={updatePaymentMutation.isPending}
+                >
+                  Save Changes
+                </Button>
+              </div>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

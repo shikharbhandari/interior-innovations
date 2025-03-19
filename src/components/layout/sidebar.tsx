@@ -12,7 +12,8 @@ import {
   LogOut,
   Menu,
   Download,
-  FileText
+  FileText,
+  File
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useToast } from "@/hooks/use-toast";
@@ -52,6 +53,7 @@ export function Sidebar() {
     { href: "/labors", label: "Labors", icon: HardHat },
     { href: "/contracts", label: "Contracts", icon: FileText },
     { href: "/tasks", label: "Tasks", icon: Clipboard },
+    { href: "/documents", label: "Documents", icon: File },
     { href: "/exports", label: "Exports", icon: Download },
   ];
 

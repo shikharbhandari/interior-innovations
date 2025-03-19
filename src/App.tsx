@@ -19,6 +19,7 @@ import Labors from "@/pages/labors";
 import Exports from "@/pages/exports";
 import Contracts from "@/pages/contracts";
 import ContractDetails from "@/pages/contract-details";
+import Documents from "@/pages/documents";
 
 function PrivateRoute({ component: Component }: { component: React.ComponentType }) {
   const [, setLocation] = useLocation();
@@ -97,6 +98,7 @@ function Router() {
       <Route path="/exports" component={() => <PrivateRoute component={Exports} />} />
       <Route path="/contracts" component={() => <PrivateRoute component={Contracts} />} />
       <Route path="/contracts/:id" component={() => <PrivateRoute component={ContractDetails} />} />
+      <Route path="/documents" component={() => <PrivateRoute component={Documents} />} />
       <Route path="/" component={AuthPage} />
       <Route component={NotFound} />
     </Switch>

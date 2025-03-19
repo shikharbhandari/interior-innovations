@@ -76,6 +76,15 @@ export const payments = pgTable("payments", {
   updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
 
+export const documents = pgTable("documents", {
+  id: integer("id").primaryKey(),
+  name: text("name").notNull(),
+  category: text("category").notNull(),
+  file_path: text("file_path").notNull(),
+  uploaded_at: timestamp("uploaded_at", { withTimezone: true }).defaultNow(),
+  updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
 // Schema definitions for inserts
 export const insertClientSchema = createInsertSchema(clients)
   .omit({ id: true, created_at: true, updated_at: true });
@@ -111,6 +120,9 @@ export const insertPaymentSchema = createInsertSchema(payments, {
 })
   .omit({ id: true, created_at: true, updated_at: true });
 
+export const insertDocumentSchema = createInsertSchema(documents)
+  .omit({ id: true, uploaded_at: true, updated_at: true });
+
 // Type definitions
 export type Client = typeof clients.$inferSelect;
 export type InsertClient = z.infer<typeof insertClientSchema>;
@@ -129,3 +141,6 @@ export type InsertContract = z.infer<typeof insertContractSchema>;
 
 export type Payment = typeof payments.$inferSelect;
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
+
+export type Document = typeof documents.$inferSelect;
+export type InsertDocument = z.infer<typeof insertDocumentSchema>;
