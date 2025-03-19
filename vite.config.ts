@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export default defineConfig({
-  base: '/',
+  base: './',
   plugins: [
     checker({ typescript: false }),
     react(),
@@ -23,7 +23,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: path.resolve(__dirname, "dist/public"),
+    outDir: 'dist',
     emptyOutDir: true,
   },
 });
