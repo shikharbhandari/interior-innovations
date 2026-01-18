@@ -842,7 +842,7 @@ export default function Contracts() {
                     name="commission_percentage"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Commission Percentage (%)</FormLabel>
+                        <FormLabel>Commission (%)</FormLabel>
                         <FormControl>
                           <Input
                             type="number"
