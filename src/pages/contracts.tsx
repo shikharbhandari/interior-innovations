@@ -3,10 +3,9 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { Plus, Pencil, IndianRupee, Search } from "lucide-react";
+import { Plus, Pencil, IndianRupee, Search, Trash, MoreVertical } from "lucide-react";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { format } from "date-fns";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 
@@ -27,6 +26,16 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Form,
   FormControl,
   FormField,
@@ -37,6 +46,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -44,23 +54,40 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { insertContractSchema, insertPaymentSchema, type Contract, type InsertContract, type InsertPayment } from "@/lib/schema";
 
 export default function Contracts() {
   const [isOpen, setIsOpen] = useState(false);
   const [isPaymentDialogOpen, setIsPaymentDialogOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [selectedContract, setSelectedContract] = useState<Contract | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [clientFilter, setClientFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 7;
   const { toast } = useToast();
   const [, setLocation] = useLocation();
 
+  // Check for status query parameter on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get('status');
+    if (status === 'pending') {
+      setStatusFilter('pending');
+    }
+  }, []);
+
   const { data: contracts, isLoading: contractsLoading } = useQuery({
-    queryKey: ['contracts', searchQuery, statusFilter, typeFilter, currentPage],
+    queryKey: ['contracts', searchQuery, statusFilter, typeFilter, clientFilter, currentPage],
     queryFn: async () => {
       let query = supabase
         .from('contracts')
@@ -84,16 +111,15 @@ export default function Contracts() {
             date,
             type
           )
-        `)
-        .order('created_at', { ascending: false });
+        `);
 
       // Apply filters
       if (searchQuery) {
         query = query.ilike('title', `%${searchQuery}%`);
       }
 
-      if (statusFilter !== 'all') {
-        query = query.eq('status', statusFilter);
+      if (clientFilter !== 'all') {
+        query = query.eq('client_id', Number(clientFilter));
       }
 
       if (typeFilter === 'vendor') {
@@ -102,13 +128,38 @@ export default function Contracts() {
         query = query.not('labor_id', 'is', null);
       }
 
-      // Apply pagination
-      const start = (currentPage - 1) * itemsPerPage;
-      query = query.range(start, start + itemsPerPage - 1);
-
       const { data, error } = await query;
       if (error) throw error;
-      return data;
+      
+      let filteredData = data || [];
+      
+      // Apply payment status filter
+      if (statusFilter === 'completed') {
+        filteredData = filteredData.filter(contract => {
+          const pendingAmount = Number(contract.commission_amount) -
+            (contract.payments?.filter(p => p.type !== 'client')
+              .reduce((sum, p) => sum + Number(p.amount), 0) || 0);
+          return pendingAmount === 0;
+        });
+      } else if (statusFilter === 'pending') {
+        filteredData = filteredData.filter(contract => {
+          const pendingAmount = Number(contract.commission_amount) -
+            (contract.payments?.filter(p => p.type !== 'client')
+              .reduce((sum, p) => sum + Number(p.amount), 0) || 0);
+          return pendingAmount > 0;
+        });
+      }
+      
+      // Sort by client name in ascending order
+      const sortedData = filteredData.sort((a, b) => {
+        const nameA = a.clients?.name?.toLowerCase() || '';
+        const nameB = b.clients?.name?.toLowerCase() || '';
+        return nameA.localeCompare(nameB);
+      });
+      
+      // Apply pagination after filtering
+      const start = (currentPage - 1) * itemsPerPage;
+      return sortedData.slice(start, start + itemsPerPage);
     }
   });
 
@@ -118,7 +169,6 @@ export default function Contracts() {
       const { data, error } = await supabase
         .from('clients')
         .select('id, name')
-        .eq('status', 'active')
         .order('name');
       if (error) throw error;
       return data;
@@ -178,11 +228,74 @@ export default function Contracts() {
     }
   });
 
+  // Auto-calculate commission values based on contract amount
+  useEffect(() => {
+    const subscription = form.watch((value, { name }) => {
+      const contractAmount = Number(value.contract_amount) || 0;
+      const commissionPercentage = Number(value.commission_percentage) || 0;
+      const commissionAmount = Number(value.commission_amount) || 0;
+
+      // Only calculate if contract amount exists
+      if (contractAmount > 0) {
+        // User entered or changed commission percentage
+        if (name === 'commission_percentage') {
+          if (commissionPercentage > 0) {
+            const calculatedAmount = (contractAmount * commissionPercentage) / 100;
+            const roundedAmount = calculatedAmount.toFixed(2);
+            // Only update if different
+            if (value.commission_amount !== roundedAmount) {
+              form.setValue('commission_amount', roundedAmount, { shouldValidate: false });
+            }
+          } else if (value.commission_percentage === '') {
+            // Percentage cleared, clear amount
+            if (value.commission_amount) {
+              form.setValue('commission_amount', '', { shouldValidate: false });
+            }
+          }
+          return;
+        }
+
+        // User entered or changed commission amount
+        if (name === 'commission_amount') {
+          if (commissionAmount > 0) {
+            const calculatedPercentage = (commissionAmount / contractAmount) * 100;
+            const roundedPercentage = calculatedPercentage.toFixed(2);
+            // Only update if different
+            if (value.commission_percentage !== roundedPercentage) {
+              form.setValue('commission_percentage', roundedPercentage, { shouldValidate: false });
+            }
+          } else if (value.commission_amount === '') {
+            // Amount cleared, clear percentage
+            if (value.commission_percentage) {
+              form.setValue('commission_percentage', '', { shouldValidate: false });
+            }
+          }
+          return;
+        }
+
+        // User changed contract amount - recalculate based on existing percentage or amount
+        if (name === 'contract_amount') {
+          if (commissionPercentage > 0) {
+            const calculatedAmount = (contractAmount * commissionPercentage) / 100;
+            const roundedAmount = calculatedAmount.toFixed(2);
+            if (value.commission_amount !== roundedAmount) {
+              form.setValue('commission_amount', roundedAmount, { shouldValidate: false });
+            }
+          } else if (commissionAmount > 0) {
+            const calculatedPercentage = (commissionAmount / contractAmount) * 100;
+            const roundedPercentage = calculatedPercentage.toFixed(2);
+            if (value.commission_percentage !== roundedPercentage) {
+              form.setValue('commission_percentage', roundedPercentage, { shouldValidate: false });
+            }
+          }
+        }
+      }
+    });
+    
+    return () => subscription.unsubscribe();
+  }, [form]);
+
   // Watch contract_amount and commission_percentage to calculate commission_amount
-  const contractAmount = form.watch('contract_amount');
-  const commissionPercentage = form.watch('commission_percentage');
-
-
   const createMutation = useMutation({
     mutationFn: async (values: InsertContract) => {
       console.log('Creating contract with values:', values);
@@ -282,6 +395,32 @@ export default function Contracts() {
     }
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: async (contractId: number) => {
+      const { error } = await supabase
+        .from('contracts')
+        .delete()
+        .eq('id', contractId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['contracts'] });
+      setIsDeleteDialogOpen(false);
+      setSelectedContract(null);
+      toast({
+        title: "Success",
+        description: "Contract deleted successfully",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: error.message,
+      });
+    }
+  });
+
   const onSubmit = (values: InsertContract) => {
     console.log('Form values:', values);
     if (selectedContract) {
@@ -326,20 +465,37 @@ export default function Contracts() {
     setIsPaymentDialogOpen(true);
   };
 
+  const handleDelete = (contract: Contract) => {
+    setSelectedContract(contract);
+    setIsDeleteDialogOpen(true);
+  };
+
+  const confirmDelete = () => {
+    if (selectedContract) {
+      deleteMutation.mutate(selectedContract.id);
+    }
+  };
+
   // Total count for pagination
   const { data: totalCount } = useQuery({
-    queryKey: ['contracts-count', searchQuery, statusFilter, typeFilter],
+    queryKey: ['contracts-count', searchQuery, statusFilter, typeFilter, clientFilter],
     queryFn: async () => {
       let query = supabase
         .from('contracts')
-        .select('*', { count: 'exact' });
+        .select(`
+          commission_amount,
+          payments (
+            amount,
+            type
+          )
+        `);
 
       if (searchQuery) {
         query = query.ilike('title', `%${searchQuery}%`);
       }
 
-      if (statusFilter !== 'all') {
-        query = query.eq('status', statusFilter);
+      if (clientFilter !== 'all') {
+        query = query.eq('client_id', Number(clientFilter));
       }
 
       if (typeFilter === 'vendor') {
@@ -348,13 +504,146 @@ export default function Contracts() {
         query = query.not('labor_id', 'is', null);
       }
 
-      const { count, error } = await query;
+      const { data, error } = await query;
       if (error) throw error;
-      return count;
+      
+      let filteredData = data || [];
+      
+      // Apply payment status filter
+      if (statusFilter === 'completed') {
+        filteredData = filteredData.filter(contract => {
+          const pendingAmount = Number(contract.commission_amount) -
+            (contract.payments?.filter(p => p.type !== 'client')
+              .reduce((sum, p) => sum + Number(p.amount), 0) || 0);
+          return pendingAmount === 0;
+        });
+      } else if (statusFilter === 'pending') {
+        filteredData = filteredData.filter(contract => {
+          const pendingAmount = Number(contract.commission_amount) -
+            (contract.payments?.filter(p => p.type !== 'client')
+              .reduce((sum, p) => sum + Number(p.amount), 0) || 0);
+          return pendingAmount > 0;
+        });
+      }
+      
+      return filteredData.length;
     }
   });
 
   const totalPages = Math.ceil((totalCount || 0) / itemsPerPage);
+
+  // Total commission amount with filters
+  const { data: totalCommission } = useQuery({
+    queryKey: ['contracts-total-commission', searchQuery, statusFilter, typeFilter, clientFilter],
+    queryFn: async () => {
+      let query = supabase
+        .from('contracts')
+        .select(`
+          commission_amount,
+          payments (
+            amount,
+            type
+          )
+        `);
+
+      if (searchQuery) {
+        query = query.ilike('title', `%${searchQuery}%`);
+      }
+
+      if (clientFilter !== 'all') {
+        query = query.eq('client_id', Number(clientFilter));
+      }
+
+      if (typeFilter === 'vendor') {
+        query = query.not('vendor_id', 'is', null);
+      } else if (typeFilter === 'labor') {
+        query = query.not('labor_id', 'is', null);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      
+      let filteredData = data || [];
+      
+      // Apply payment status filter
+      if (statusFilter === 'completed') {
+        filteredData = filteredData.filter(contract => {
+          const pendingAmount = Number(contract.commission_amount) -
+            (contract.payments?.filter(p => p.type !== 'client')
+              .reduce((sum, p) => sum + Number(p.amount), 0) || 0);
+          return pendingAmount === 0;
+        });
+      } else if (statusFilter === 'pending') {
+        filteredData = filteredData.filter(contract => {
+          const pendingAmount = Number(contract.commission_amount) -
+            (contract.payments?.filter(p => p.type !== 'client')
+              .reduce((sum, p) => sum + Number(p.amount), 0) || 0);
+          return pendingAmount > 0;
+        });
+      }
+      
+      return filteredData.reduce((sum, contract) => sum + Number(contract.commission_amount), 0) || 0;
+    }
+  });
+
+  // Total pending commission amount with filters
+  const { data: totalPendingCommission } = useQuery({
+    queryKey: ['contracts-total-pending', searchQuery, statusFilter, typeFilter, clientFilter],
+    queryFn: async () => {
+      let query = supabase
+        .from('contracts')
+        .select(`
+          commission_amount,
+          payments (
+            amount,
+            type
+          )
+        `);
+
+      if (searchQuery) {
+        query = query.ilike('title', `%${searchQuery}%`);
+      }
+
+      if (clientFilter !== 'all') {
+        query = query.eq('client_id', Number(clientFilter));
+      }
+
+      if (typeFilter === 'vendor') {
+        query = query.not('vendor_id', 'is', null);
+      } else if (typeFilter === 'labor') {
+        query = query.not('labor_id', 'is', null);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+      
+      let filteredData = data || [];
+      
+      // Apply payment status filter
+      if (statusFilter === 'completed') {
+        filteredData = filteredData.filter(contract => {
+          const pendingAmount = Number(contract.commission_amount) -
+            (contract.payments?.filter(p => p.type !== 'client')
+              .reduce((sum, p) => sum + Number(p.amount), 0) || 0);
+          return pendingAmount === 0;
+        });
+      } else if (statusFilter === 'pending') {
+        filteredData = filteredData.filter(contract => {
+          const pendingAmount = Number(contract.commission_amount) -
+            (contract.payments?.filter(p => p.type !== 'client')
+              .reduce((sum, p) => sum + Number(p.amount), 0) || 0);
+          return pendingAmount > 0;
+        });
+      }
+      
+      return filteredData.reduce((sum, contract) => {
+        const totalPaid = contract.payments?.filter(p => p.type !== 'client')
+          .reduce((paidSum, p) => paidSum + Number(p.amount), 0) || 0;
+        const pending = Number(contract.commission_amount) - totalPaid;
+        return sum + pending;
+      }, 0) || 0;
+    }
+  });
 
   const handlePreviousPage = () => {
     setCurrentPage((prev) => Math.max(1, prev - 1));
@@ -404,20 +693,7 @@ export default function Contracts() {
             </DialogHeader>
             <Form {...form}>
               <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <FormField
-                    control={form.control}
-                    name="title"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Title</FormLabel>
-                        <FormControl>
-                          <Input {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                <div className="grid">
                   <FormField
                     control={form.control}
                     name="client_id"
@@ -571,7 +847,9 @@ export default function Contracts() {
                           <Input
                             type="number"
                             {...field}
-                            onChange={(e) => field.onChange(e.target.value)}
+                            onChange={(e) => {
+                              field.onChange(e.target.value);
+                            }}
                           />
                         </FormControl>
                         <FormMessage />
@@ -590,7 +868,9 @@ export default function Contracts() {
                         <Input
                           type="number"
                           {...field}
-                          onChange={(e) => field.onChange(e.target.value)}
+                          onChange={(e) => {
+                              field.onChange(e.target.value);
+                            }}
                         />
                       </FormControl>
                       <FormMessage />
@@ -598,34 +878,8 @@ export default function Contracts() {
                   )}
                 />
 
-                <FormField
-                  control={form.control}
-                  name="status"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Status</FormLabel>
-                      <Select
-                        onValueChange={field.onChange}
-                        value={field.value}
-                      >
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select status" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="active">Active</SelectItem>
-                          <SelectItem value="inactive">Inactive</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
 
-
-                <div className="grid grid-cols-2 gap-4">
-                  <FormField
+                <div className="grid grid-cols-2 gap-4">                  <FormField
                     control={form.control}
                     name="start_date"
                     render={({ field }) => (
@@ -696,6 +950,23 @@ export default function Contracts() {
         </div>
 
         <div className="w-full md:w-1/4">
+          <Label>Client</Label>
+          <Select value={clientFilter} onValueChange={setClientFilter}>
+            <SelectTrigger>
+              <SelectValue placeholder="Filter by client" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Clients</SelectItem>
+              {clients?.map((client) => (
+                <SelectItem key={client.id} value={client.id.toString()}>
+                  {client.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="w-full md:w-1/4">
           <Label>Status</Label>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger>
@@ -703,8 +974,8 @@ export default function Contracts() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All</SelectItem>
-              <SelectItem value="active">Active</SelectItem>
-              <SelectItem value="inactive">Inactive</SelectItem>
+              <SelectItem value="completed">Completed</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -724,6 +995,65 @@ export default function Contracts() {
         </div>
       </div>
 
+      {/* Total Commission Card */}
+      <Card className="border-stone-400" style={{ backgroundColor: 'rgb(174 168 162 / var(--tw-bg-opacity, 1))' }}>
+        <CardContent className="pt-6">
+          {statusFilter === 'all' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Commission Amount</p>
+                  <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                    ₹{(totalCommission || 0).toLocaleString()}
+                  </p>
+                </div>
+                <div className="h-12 w-12 rounded-full bg-white/20 flex items-center justify-center">
+                  <IndianRupee className="h-6 w-6 text-white" />
+                </div>
+              </div>
+              <div className="flex items-center justify-between border-l-0 md:border-l-2 border-white/30 md:pl-6">
+                <div>
+                  <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Pending Commission</p>
+                  <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                    ₹{(totalPendingCommission || 0).toLocaleString()}
+                  </p>
+                </div>
+                <div className="h-12 w-12 rounded-full bg-white/20 flex items-center justify-center">
+                  <IndianRupee className="h-6 w-6 text-white" />
+                </div>
+              </div>
+            </div>
+          ) : statusFilter === 'pending' ? (
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Pending Commission</p>
+                <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                  ₹{(totalPendingCommission || 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-full bg-white/20 flex items-center justify-center">
+                <IndianRupee className="h-6 w-6 text-white" />
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Amount Earned</p>
+                <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                  ₹{((totalCommission || 0) - (totalPendingCommission || 0)).toLocaleString()}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-full bg-white/20 flex items-center justify-center">
+                <IndianRupee className="h-6 w-6 text-white" />
+              </div>
+            </div>
+          )}
+          <p className="text-xs mt-4" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+            Based on {totalCount || 0} contract{(totalCount || 0) !== 1 ? 's' : ''}
+          </p>
+        </CardContent>
+      </Card>
+
       {/* Payment Dialog */}
       <Dialog open={isPaymentDialogOpen} onOpenChange={setIsPaymentDialogOpen}>
         <DialogContent>
@@ -735,6 +1065,31 @@ export default function Contracts() {
           </DialogHeader>
           <Form {...paymentForm}>
             <form onSubmit={paymentForm.handleSubmit(onPaymentSubmit)} className="space-y-4">
+              <div className="flex items-center space-x-2">
+                <Checkbox
+                  id="usePendingAmount"
+                  onCheckedChange={(checked) => {
+                    if (checked && selectedContract) {
+                      const totalPaid = selectedContract.payments?.filter(p => p.type !== 'client')
+                        .reduce((sum, p) => sum + Number(p.amount), 0) || 0;
+                      const pendingAmount = Number(selectedContract.commission_amount) - totalPaid;
+                      paymentForm.setValue('amount', pendingAmount.toString());
+                    }
+                  }}
+                />
+                <label
+                  htmlFor="usePendingAmount"
+                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                >
+                  Use pending amount (₹
+                  {selectedContract ? (
+                    Number(selectedContract.commission_amount) -
+                    (selectedContract.payments?.filter(p => p.type !== 'client')
+                      .reduce((sum, p) => sum + Number(p.amount), 0) || 0)
+                  ).toLocaleString() : 0})
+                </label>
+              </div>
+              
               <FormField
                 control={paymentForm.control}
                 name="amount"
@@ -808,10 +1163,8 @@ export default function Contracts() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Title</TableHead>
                 <TableHead>Client</TableHead>
                 <TableHead>Vendor/Labor</TableHead>
-                <TableHead>Amount (₹)</TableHead>
                 <TableHead>Commission</TableHead>
                 <TableHead>Pending (₹)</TableHead>
                 <TableHead>Status</TableHead>
@@ -825,53 +1178,80 @@ export default function Contracts() {
                   className="cursor-pointer hover:bg-gray-50"
                   onClick={() => setLocation(`/contracts/${contract.id}`)}
                 >
-                  <TableCell>{contract.title}</TableCell>
                   <TableCell>{contract.clients?.name}</TableCell>
                   <TableCell>
                     {contract.vendors?.name || contract.labors?.name}
                   </TableCell>
-                  <TableCell>₹{Number(contract.contract_amount).toLocaleString()}</TableCell>
                   <TableCell>
-                    {contract.commission_percentage}% (₹{Number(contract.commission_amount).toLocaleString()})
+                    ₹{Number(contract.commission_amount).toLocaleString()}
                   </TableCell>
-                  <TableCell className="text-orange-600 font-medium">
+                  <TableCell className={`font-medium ${
+                    (Number(contract.commission_amount) -
+                      (contract.payments?.filter(p => p.type !== 'client')
+                        .reduce((sum, p) => sum + Number(p.amount), 0) || 0)
+                    ) > 0 ? 'text-red-600' : 'text-black'
+                  }`}>
                     ₹{(Number(contract.commission_amount) -
                       (contract.payments?.filter(p => p.type !== 'client')
                         .reduce((sum, p) => sum + Number(p.amount), 0) || 0)
                       ).toLocaleString()}
                   </TableCell>
                   <TableCell>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      contract.status === 'active'
-                        ? 'bg-emerald-50/50 text-emerald-600'
-                        : 'bg-slate-50/50 text-slate-500'
-                    }`}>
-                      {contract.status}
-                    </span>
+                    {(() => {
+                      const pendingAmount = Number(contract.commission_amount) -
+                        (contract.payments?.filter(p => p.type !== 'client')
+                          .reduce((sum, p) => sum + Number(p.amount), 0) || 0);
+                      const isCompleted = pendingAmount === 0;
+                      
+                      return (
+                        <span className="text-black">
+                          {isCompleted ? 'Completed' : 'Pending'}
+                        </span>
+                      );
+                    })()}
                   </TableCell>
                   <TableCell>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleEdit(contract);
-                        }}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handlePayment(contract);
-                        }}
-                      >
-                        <IndianRupee className="h-4 w-4" />
-                      </Button>
-                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePayment(contract);
+                          }}
+                        >
+                          <IndianRupee className="h-4 w-4 mr-2" />
+                          Update Payment
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEdit(contract);
+                          }}
+                        >
+                          <Pencil className="h-4 w-4 mr-2" />
+                          Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(contract);
+                          }}
+                          className="text-red-600"
+                        >
+                          <Trash className="h-4 w-4 mr-2" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </TableCell>
                 </TableRow>
               ))}
@@ -903,6 +1283,26 @@ export default function Contracts() {
           </Button>
         </div>
       </div>
+
+      <AlertDialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Contract</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete the contract with commission amount - "{selectedContract?.commission_amount}"? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={confirmDelete}
+              className="bg-red-500 hover:bg-red-600"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

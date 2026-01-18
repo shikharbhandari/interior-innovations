@@ -4,7 +4,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { DollarSign, Users, Truck, CheckSquare, TrendingUp, Clock, IndianRupee, Wallet } from "lucide-react";
 import { format } from "date-fns";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -32,16 +32,20 @@ function StatsCard({
   value,
   subValue,
   subValue2,
-  icon: Icon
+  icon: Icon,
+  onClick,
+  onSubValue2Click
 }: {
   title: string;
   value: string | number;
   subValue?: string;
   subValue2?: string;
   icon: React.ComponentType<any>;
+  onClick?: () => void;
+  onSubValue2Click?: () => void;
 }) {
   return (
-    <Card className="hover:bg-accent/10 transition-colors cursor-pointer">
+    <Card className="hover:bg-accent/10 transition-colors cursor-pointer" onClick={onClick}>
       <CardContent className="pt-6">
         <div className="flex items-center justify-between">
           <div>
@@ -51,7 +55,17 @@ function StatsCard({
               <p className="text-sm text-muted-foreground mt-1">{subValue}</p>
             )}
             {subValue2 && (
-              <p className="text-sm text-orange-600 mt-1">{subValue2}</p>
+              <p 
+                className="text-sm text-orange-600 mt-1 hover:underline" 
+                onClick={(e) => {
+                  if (onSubValue2Click) {
+                    e.stopPropagation();
+                    onSubValue2Click();
+                  }
+                }}
+              >
+                {subValue2}
+              </p>
             )}
           </div>
           <Icon className="h-8 w-8 text-primary/40" />
@@ -63,6 +77,7 @@ function StatsCard({
 
 export default function Dashboard() {
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ['dashboard-stats'],
     queryFn: async () => {
@@ -212,13 +227,12 @@ export default function Dashboard() {
             icon={Users}
           />
         </Link>
-        <Link href="/clients">
-          <StatsCard
-            title="Active Clients"
-            value={stats?.activeClients || 0}
-            icon={Users}
-          />
-        </Link>
+        <StatsCard
+          title="Active Clients"
+          value={stats?.activeClients || 0}
+          icon={Users}
+          onClick={() => setLocation('/clients?status=active')}
+        />
         <Link href="/vendors">
           <StatsCard
             title="Total Vendors"
@@ -239,6 +253,8 @@ export default function Dashboard() {
           subValue={`Total Commission from All Contracts`}
           subValue2={`Pending: ₹${(stats?.pendingCommission || 0).toLocaleString()}`}
           icon={IndianRupee}
+          onClick={() => setLocation('/contracts')}
+          onSubValue2Click={() => setLocation('/contracts?status=pending')}
         />
         <StatsCard
           title="Client Amount Summary"
@@ -246,6 +262,8 @@ export default function Dashboard() {
           subValue={`Total Amount from All Contracts`}
           subValue2={`Pending: ₹${(stats?.pendingClientAmount || 0).toLocaleString()}`}
           icon={Wallet}
+          onClick={() => setLocation('/clients')}
+          onSubValue2Click={() => setLocation('/clients?status=pending')}
         />
       </div>
 

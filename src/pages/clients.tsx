@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { Plus, Pencil, Trash, Search } from "lucide-react";
+import { Plus, Pencil, Trash, Search, IndianRupee } from "lucide-react";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
@@ -65,38 +65,109 @@ export default function Clients() {
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
 
+  // Check for status query parameter on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get('status');
+    if (status === 'pending') {
+      setPaymentStatusFilter('pending');
+    } else if (status === 'active' || status === 'inactive') {
+      setStatusFilter(status);
+    }
+  }, []);
+
   const { data: clientData, isLoading } = useQuery({
-    queryKey: ['clients', currentPage, statusFilter],
+    queryKey: ['clients', statusFilter],
     queryFn: async () => {
       let query = supabase
         .from('clients')
-        .select('*', { count: 'exact' });
+        .select('*');
 
       // Apply status filter
       if (statusFilter !== 'all') {
         query = query.eq('status', statusFilter);
       }
 
-      // Apply pagination
-      const from = (currentPage - 1) * ITEMS_PER_PAGE;
-      const to = from + ITEMS_PER_PAGE - 1;
-
-      const { data, count, error } = await query
-        .order('name')
-        .range(from, to);
+      const { data, error } = await query.order('name');
 
       if (error) throw error;
-      return { data: data as Client[], count: count || 0 };
+      return data as Client[];
     }
   });
 
-  const filteredClients = clientData?.data.filter(client =>
-    client.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (client.email && client.email.toLowerCase().includes(searchQuery.toLowerCase())) ||
-    (client.phone && client.phone.toLowerCase().includes(searchQuery.toLowerCase()))
-  );
+  const { data: paymentsData } = useQuery({
+    queryKey: ['payments'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('payments')
+        .select('*')
+      
+      if (error) throw error;
+      return data;
+    }
+  });
+
+  const allFilteredClients = clientData?.filter(client => {
+    const matchesSearch = client.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (client.email && client.email.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (client.phone && client.phone.toLowerCase().includes(searchQuery.toLowerCase()));
+    
+    if (!matchesSearch) return false;
+    
+    // Calculate pending amount
+    const pendingAmount = Number(client.contract_amount || 0) - (paymentsData || [])
+      .filter(p => p.client_id === client.id)
+      .reduce((pSum, p) => pSum + Number(p.amount), 0);
+    
+    // Apply payment status filter
+    if (paymentStatusFilter === 'pending' && pendingAmount <= 0) return false;
+    if (paymentStatusFilter === 'completed' && pendingAmount > 0) return false;
+    
+    return true;
+  });
+
+  // Apply pagination after filtering
+  const totalFilteredCount = allFilteredClients?.length || 0;
+  const totalPages = Math.ceil(totalFilteredCount / ITEMS_PER_PAGE);
+  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
+  const endIndex = startIndex + ITEMS_PER_PAGE;
+  const filteredClients = allFilteredClients?.slice(startIndex, endIndex);
+
+  // Calculate totals based on payment status filter
+  const calculateTotals = () => {
+    if (!clientData || !paymentsData) return { totalAmount: 0, pendingAmount: 0, earnedAmount: 0 };
+
+    let clientsToCalculate = clientData;
+
+    // Filter clients based on payment status if needed
+    if (paymentStatusFilter !== 'all') {
+      clientsToCalculate = clientData.filter(client => {
+        const pendingAmount = Number(client.contract_amount || 0) - (paymentsData || [])
+          .filter(p => p.client_id === client.id)
+          .reduce((pSum, p) => pSum + Number(p.amount), 0);
+        
+        if (paymentStatusFilter === 'pending') return pendingAmount > 0;
+        if (paymentStatusFilter === 'completed') return pendingAmount <= 0;
+        return true;
+      });
+    }
+
+    const totalAmount = clientsToCalculate.reduce((sum, client) => sum + Number(client.contract_amount || 0), 0);
+    const earnedAmount = clientsToCalculate.reduce((sum, client) => {
+      const paid = (paymentsData || [])
+        .filter(p => p.client_id === client.id)
+        .reduce((pSum, p) => pSum + Number(p.amount), 0);
+      return sum + paid;
+    }, 0);
+    const pendingAmount = totalAmount - earnedAmount;
+
+    return { totalAmount, pendingAmount, earnedAmount };
+  };
+
+  const { totalAmount, pendingAmount, earnedAmount } = calculateTotals();
 
   const form = useForm<InsertClient>({
     resolver: zodResolver(insertClientSchema),
@@ -205,20 +276,6 @@ export default function Clients() {
     }
   });
 
-  const { data } = useQuery({
-    queryKey: ['payments'],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('payments')
-        .select('*')
-      
-      if (error) throw error;
-      return data;
-    }
-  });
-
-  console.log(data);
-
   const onSubmit = (values: InsertClient) => {
     if (editingClient) {
       updateMutation.mutate(values);
@@ -244,8 +301,6 @@ export default function Clients() {
     setClientToDelete(client);
     setDeleteDialogOpen(true);
   };
-
-  const totalPages = Math.ceil((clientData?.count || 0) / ITEMS_PER_PAGE);
 
   if (isLoading) {
     return <div className="p-6">Loading...</div>;
@@ -367,30 +422,6 @@ export default function Clients() {
                     </FormItem>
                   )}
                 />
-                <FormField
-                  control={form.control}
-                  name="status"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Status</FormLabel>
-                      <Select
-                        onValueChange={field.onChange}
-                        defaultValue={field.value}
-                      >
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select status" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="active">Active</SelectItem>
-                          <SelectItem value="inactive">Inactive</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
                 <Button
                   type="submit"
                   className="w-full"
@@ -427,7 +458,79 @@ export default function Clients() {
             <SelectItem value="inactive">Inactive</SelectItem>
           </SelectContent>
         </Select>
+        <Select
+          value={paymentStatusFilter}
+          onValueChange={setPaymentStatusFilter}
+        >
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="Payment status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Payments</SelectItem>
+            <SelectItem value="pending">Pending</SelectItem>
+            <SelectItem value="completed">Completed</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
+
+      {/* Total Amount Card */}
+      <Card className="border-stone-400" style={{ backgroundColor: 'rgb(174 168 162 / var(--tw-bg-opacity, 1))' }}>
+        <CardContent className="pt-6">
+          {paymentStatusFilter === 'all' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Contract Amount</p>
+                  <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                    ₹{totalAmount.toLocaleString()}
+                  </p>
+                </div>
+                <div className="h-12 w-12 rounded-full bg-white/20 flex items-center justify-center">
+                  <IndianRupee className="h-6 w-6 text-white" />
+                </div>
+              </div>
+              <div className="flex items-center justify-between border-l-0 md:border-l-2 border-white/30 md:pl-6">
+                <div>
+                  <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Pending Amount</p>
+                  <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                    ₹{pendingAmount.toLocaleString()}
+                  </p>
+                </div>
+                <div className="h-12 w-12 rounded-full bg-white/20 flex items-center justify-center">
+                  <IndianRupee className="h-6 w-6 text-white" />
+                </div>
+              </div>
+            </div>
+          ) : paymentStatusFilter === 'pending' ? (
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Pending Amount</p>
+                <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                  ₹{pendingAmount.toLocaleString()}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-full bg-white/20 flex items-center justify-center">
+                <IndianRupee className="h-6 w-6 text-white" />
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Amount Earned</p>
+                <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                  ₹{earnedAmount.toLocaleString()}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-full bg-white/20 flex items-center justify-center">
+                <IndianRupee className="h-6 w-6 text-white" />
+              </div>
+            </div>
+          )}
+          <p className="text-xs mt-4" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+            Based on {totalFilteredCount} client{totalFilteredCount !== 1 ? 's' : ''}
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -455,7 +558,7 @@ export default function Clients() {
                   <TableCell>{client.name}</TableCell>
                   <TableCell>{client.phone}</TableCell>
                   <TableCell>₹{client.contract_amount?.toLocaleString()}</TableCell>
-                  <TableCell>₹{Number(client.contract_amount || 0) - (data || [])
+                  <TableCell>₹{Number(client.contract_amount || 0) - (paymentsData || [])
                                               .filter(p => p.client_id === client.id)
                                               .reduce((pSum, p) => pSum + Number(p.amount), 0)}</TableCell>
                   <TableCell>
@@ -497,7 +600,7 @@ export default function Clients() {
             </TableBody>
           </Table>
 
-          {(clientData?.count || 0) > ITEMS_PER_PAGE && (
+          {totalFilteredCount > ITEMS_PER_PAGE && (
             <div className="mt-6 flex justify-center">
               <Pagination>
                 <PaginationContent>
