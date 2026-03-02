@@ -688,12 +688,16 @@ export default function ClientFinancials() {
       opts.labour && "Labour",
       opts.fees && "Fee",
     ].filter(Boolean) as string[];
-    const allSelected = opts.vendors && opts.labour && opts.fees && opts.clientPayments;
+    const allSelected = opts.vendors && opts.labour && opts.fees && opts.designerFees && opts.clientPayments;
     let docLabel: string;
     if (allSelected) {
       docLabel = "Client Financial Summary";
     } else {
-      const parts = [...includedTypeLabels, opts.clientPayments ? "Payments" : ""].filter(Boolean);
+      const parts = [
+        ...includedTypeLabels,
+        opts.designerFees ? "Designer Fees" : "",
+        opts.clientPayments ? "Payments" : "",
+      ].filter(Boolean);
       if (parts.length === 0) {
         docLabel = "Client Financial Summary";
       } else if (parts.length === 1) {
@@ -712,15 +716,20 @@ export default function ClientFinancials() {
       - (opts.designerFees ? totalDesignerFee : 0);
 
     // Cards shown when Client Payments is selected
+    const totalBilledForCards = filteredBilled + (opts.designerFees ? totalDesignerFee : 0);
     const showCards = opts.clientPayments;
     const summaryCards: string[] = [];
     if (showCards) {
-      if (hasLineItems) {
+      if (hasLineItems || opts.designerFees) {
+        const billedLabel = !hasLineItems && opts.designerFees ? "Designer Fees Total" : "Total Billed";
+        const billedSub = !hasLineItems && opts.designerFees
+          ? "designer fees"
+          : [...includedTypeLabels, opts.designerFees ? "Designer Fees" : ""].filter(Boolean).join(", ") || "selected items";
         summaryCards.push(`
     <div class="card">
-      <div class="card-label">Total Billed</div>
-      <div class="card-value" style="color:${brandColor}">${fmtH(filteredBilled)}</div>
-      <div class="card-sub">${includedTypeLabels.length ? includedTypeLabels.join(", ") : "selected items"}</div>
+      <div class="card-label">${billedLabel}</div>
+      <div class="card-value" style="color:${brandColor}">${fmtH(totalBilledForCards)}</div>
+      <div class="card-sub">${billedSub}</div>
     </div>`);
       }
       summaryCards.push(`
@@ -729,7 +738,7 @@ export default function ClientFinancials() {
       <div class="card-value" style="color:#16a34a">${fmtH(totalReceived)}</div>
       <div class="card-sub">payments made by client</div>
     </div>`);
-      if (hasLineItems) {
+      if (hasLineItems || opts.designerFees) {
         summaryCards.push(`
     <div class="card" style="border-color:${filteredBalance >= 0 ? "#16a34a" : "#ef4444"}44">
       <div class="card-label">Balance</div>
@@ -900,7 +909,7 @@ export default function ClientFinancials() {
     </table>
   </div>` : ""}
 
-  <div class="section">
+  ${hasLineItems ? `<div class="section">
     <div class="section-title">Project Line Items</div>
     <table>
       <thead><tr>
@@ -914,7 +923,7 @@ export default function ClientFinancials() {
         ${totalBilledFooter}
       </tbody>
     </table>
-  </div>
+  </div>` : ""}
 
   ${opts.clientPayments ? `
   <div class="section">
@@ -937,7 +946,11 @@ export default function ClientFinancials() {
 
   <div class="footer">
     <span>Prepared by <strong>${orgName}</strong></span>
-    <span>Confidential · ${generatedDate}</span>
+    <span style="display:flex;align-items:center;gap:8px">
+      <span>Confidential · ${generatedDate}</span>
+      <span style="color:#d1d5db">·</span>
+      <span style="font-size:11px">Powered by <span style="font-weight:800;color:${brandColor};letter-spacing:-0.3px">Dezfin</span></span>
+    </span>
   </div>
 
 </div>
