@@ -7,6 +7,8 @@ import { Plus, Pencil, Trash, Search } from "lucide-react";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
+import { useAuth } from "@/contexts/AuthContext";
+import { useBrandColor } from "@/hooks/use-brand-color";
 
 import {
   Table,
@@ -57,21 +59,28 @@ import { insertLaborSchema, type Labor, type InsertLabor } from "@/lib/schema";
 const ITEMS_PER_PAGE = 7;
 
 export default function Labors() {
+  const { currentOrganization, user, hasPermission } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [laborToDelete, setLaborToDelete] = useState<Labor | null>(null);
   const [editingLabor, setEditingLabor] = useState<Labor | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("active");
   const [currentPage, setCurrentPage] = useState(1);
   const { toast } = useToast();
 
+  // Get brand color from centralized hook
+  const { brandColor } = useBrandColor();
+
   const { data: laborData, isLoading } = useQuery({
-    queryKey: ['labors', currentPage, statusFilter],
+    queryKey: ['labors', currentOrganization?.organization_id, currentPage, statusFilter],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       let query = supabase
         .from('labors')
-        .select('*', { count: 'exact' });
+        .select('*', { count: 'exact' })
+        .eq('organization_id', currentOrganization.organization_id);
 
       // Apply status filter
       if (statusFilter !== 'all') {
@@ -88,7 +97,8 @@ export default function Labors() {
 
       if (error) throw error;
       return { data: data as Labor[], count: count || 0 };
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const form = useForm<InsertLabor>({
@@ -104,13 +114,19 @@ export default function Labors() {
 
   const createMutation = useMutation({
     mutationFn: async (values: InsertLabor) => {
+      if (!currentOrganization || !user) throw new Error('Not authorized');
+
       const { error } = await supabase
         .from('labors')
-        .insert([values]);
+        .insert([{
+          ...values,
+          organization_id: currentOrganization.organization_id,
+          created_by: user.id,
+        }]);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['labors'] });
+      queryClient.invalidateQueries({ queryKey: ['labors', currentOrganization?.organization_id] });
       setIsOpen(false);
       form.reset();
       toast({
@@ -129,15 +145,18 @@ export default function Labors() {
 
   const updateMutation = useMutation({
     mutationFn: async (values: InsertLabor) => {
-      if (!editingLabor) return;
+      if (!editingLabor || !user) return;
       const { error } = await supabase
         .from('labors')
-        .update(values)
+        .update({
+          ...values,
+          updated_by: user.id,
+        })
         .eq('id', editingLabor.id);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['labors'] });
+      queryClient.invalidateQueries({ queryKey: ['labors', currentOrganization?.organization_id] });
       setIsOpen(false);
       setEditingLabor(null);
       form.reset();
@@ -164,7 +183,7 @@ export default function Labors() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['labors'] });
+      queryClient.invalidateQueries({ queryKey: ['labors', currentOrganization?.organization_id] });
       setDeleteDialogOpen(false);
       setLaborToDelete(null);
       toast({
@@ -222,22 +241,26 @@ export default function Labors() {
     <div className="p-6 space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Labor Management</h1>
-        <Dialog open={isOpen} onOpenChange={setIsOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={() => {
-              setEditingLabor(null);
-              form.reset({
-                name: '',
-                phone: '',
-                specialization: '',
-                notes: '',
-                status: 'active',
-              });
-            }}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Labor
-            </Button>
-          </DialogTrigger>
+        {hasPermission('labors', 'create') && (
+          <Dialog open={isOpen} onOpenChange={setIsOpen}>
+            <DialogTrigger asChild>
+              <Button
+                style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                className="text-white hover:opacity-90"
+                onClick={() => {
+                setEditingLabor(null);
+                form.reset({
+                  name: '',
+                  phone: '',
+                  specialization: '',
+                  notes: '',
+                  status: 'active',
+                });
+              }}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Labor
+              </Button>
+            </DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
@@ -324,7 +347,8 @@ export default function Labors() {
                 />
                 <Button
                   type="submit"
-                  className="w-full"
+                  style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                  className="w-full text-white hover:opacity-90"
                   disabled={createMutation.isPending || updateMutation.isPending}
                 >
                   {editingLabor ? 'Update' : 'Create'} Labor
@@ -332,7 +356,8 @@ export default function Labors() {
               </form>
             </Form>
           </DialogContent>
-        </Dialog>
+          </Dialog>
+        )}
       </div>
 
       <div className="flex items-center space-x-4">
@@ -379,7 +404,7 @@ export default function Labors() {
               {filteredLabors?.map((labor) => (
                 <TableRow key={labor.id}>
                   <TableCell>
-                    <Link href={`/labors/${labor.id}`} className="text-primary hover:underline">
+                    <Link href={`/labors/${labor.id}`} className="hover:underline" style={{ color: brandColor }}>
                       {labor.name}
                     </Link>
                   </TableCell>
@@ -396,21 +421,25 @@ export default function Labors() {
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleEdit(labor)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                        onClick={() => handleDelete(labor)}
-                      >
-                        <Trash className="h-4 w-4" />
-                      </Button>
+                      {hasPermission('labors', 'update') && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleEdit(labor)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {hasPermission('labors', 'delete') && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => handleDelete(labor)}
+                        >
+                          <Trash className="h-4 w-4" />
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>

@@ -7,6 +7,8 @@ import { Plus, Pencil, Trash, Search } from "lucide-react";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
+import { useAuth } from "@/contexts/AuthContext";
+import { useBrandColor } from "@/hooks/use-brand-color";
 
 import {
   Table,
@@ -55,16 +57,23 @@ const TASK_STATUSES = [
 type TaskWithClient = Task & { clients: Client };
 
 export default function Tasks() {
+  const { currentOrganization, user, hasPermission } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [clientFilter, setClientFilter] = useState<string>("all");
+  const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const { toast } = useToast();
 
+  // Get brand color from centralized hook
+  const { brandColor } = useBrandColor();
+
   const { data: tasks, isLoading: tasksLoading } = useQuery({
-    queryKey: ['tasks'],
+    queryKey: ['tasks', currentOrganization?.organization_id],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       const { data, error } = await supabase
         .from('tasks')
         .select(`
@@ -72,30 +81,70 @@ export default function Tasks() {
           clients (
             id,
             name
+          ),
+          user_profiles!tasks_assigned_to_fkey (
+            id,
+            email,
+            full_name
           )
         `)
+        .eq('organization_id', currentOrganization.organization_id)
         .order('due_date', { ascending: true });
       if (error) throw error;
       return data as TaskWithClient[];
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const { data: clients, isLoading: clientsLoading } = useQuery({
-    queryKey: ['clients'],
+    queryKey: ['clients', currentOrganization?.organization_id],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       const { data, error } = await supabase
         .from('clients')
         .select('id, name')
+        .eq('organization_id', currentOrganization.organization_id)
         .order('name');
       if (error) throw error;
       return data as Client[];
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
-  // Filter tasks based on status, client, and search query
+  // Fetch organization members for task assignment
+  const { data: members } = useQuery({
+    queryKey: ['organization-members', currentOrganization?.organization_id],
+    queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
+      const { data, error } = await supabase
+        .from('organization_members')
+        .select(`
+          user_id,
+          user_profiles!organization_members_user_id_fkey (
+            id,
+            email,
+            full_name
+          )
+        `)
+        .eq('organization_id', currentOrganization.organization_id)
+        .eq('status', 'active');
+
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!currentOrganization,
+  });
+
+  // Filter tasks based on status, client, assignee, and search query
   const filteredTasks = tasks?.filter(task =>
     (statusFilter === "all" || task.status === statusFilter) &&
     (clientFilter === "all" || task.client_id?.toString() === clientFilter) &&
+    (assigneeFilter === "all" ||
+      (assigneeFilter === "unassigned" && !task.assigned_to) ||
+      (assigneeFilter === "me" && task.assigned_to === user?.id) ||
+      task.assigned_to === assigneeFilter) &&
     (task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       task.description?.toLowerCase().includes(searchQuery.toLowerCase()))
   );
@@ -107,30 +156,39 @@ export default function Tasks() {
       description: '',
       status: 'Not Started',
       due_date: new Date(),
-      client_id: null
+      client_id: null,
+      assigned_to: null
     }
   });
 
   const createMutation = useMutation({
     mutationFn: async (values: InsertTask) => {
+      if (!currentOrganization || !user) throw new Error('Not authorized');
+
       const { error } = await supabase
         .from('tasks')
         .insert([{
-          ...values,
+          title: values.title,
+          description: values.description,
+          status: values.status,
+          due_date: values.due_date.toISOString(),
           client_id: values.client_id || null,
-          due_date: values.due_date.toISOString()
+          assigned_to: values.assigned_to || null,
+          organization_id: currentOrganization.organization_id,
+          created_by: user.id,
         }]);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks', currentOrganization?.organization_id] });
       setIsOpen(false);
       form.reset({
         title: '',
         description: '',
         status: 'Not Started',
         due_date: new Date(),
-        client_id: null
+        client_id: null,
+        assigned_to: null
       });
       toast({
         title: "Success",
@@ -148,19 +206,23 @@ export default function Tasks() {
 
   const updateMutation = useMutation({
     mutationFn: async (values: InsertTask) => {
-      if (!editingTask) return;
-      const { error } = await supabase
+      if (!editingTask || !user) return;
+      const { error} = await supabase
         .from('tasks')
         .update({
-          ...values,
-          client_id: values.client_id || null, 
-          due_date: values.due_date.toISOString()
+          title: values.title,
+          description: values.description,
+          status: values.status,
+          due_date: values.due_date.toISOString(),
+          client_id: values.client_id || null,
+          assigned_to: values.assigned_to || null,
+          updated_by: user.id,
         })
         .eq('id', editingTask.id);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks', currentOrganization?.organization_id] });
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
       setIsOpen(false);
       setEditingTask(null);
@@ -169,7 +231,8 @@ export default function Tasks() {
         description: '',
         status: 'Not Started',
         due_date: new Date(),
-        client_id: undefined 
+        client_id: null,
+        assigned_to: null
       });
       toast({
         title: "Success",
@@ -194,7 +257,7 @@ export default function Tasks() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks', currentOrganization?.organization_id] });
       toast({
         title: "Success",
         description: "Task deleted successfully",
@@ -222,7 +285,8 @@ export default function Tasks() {
     form.reset({
       ...task,
       due_date: new Date(task.due_date),
-      client_id: task.client_id || null
+      client_id: task.client_id || null,
+      assigned_to: task.assigned_to || null
     });
     setIsOpen(true);
   };
@@ -270,22 +334,45 @@ export default function Tasks() {
             </SelectContent>
           </Select>
 
-          <Dialog open={isOpen} onOpenChange={setIsOpen}>
-            <DialogTrigger asChild>
-              <Button onClick={() => {
-                setEditingTask(null);
-                form.reset({
-                  title: '',
-                  description: '',
-                  status: 'Not Started',
-                  due_date: new Date(),
-                  client_id: undefined
-                });
-              }}>
-                <Plus className="h-4 w-4 mr-2" />
-                Add Task
-              </Button>
-            </DialogTrigger>
+          <Select
+            value={assigneeFilter}
+            onValueChange={setAssigneeFilter}
+          >
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="Filter by assignee" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Tasks</SelectItem>
+              <SelectItem value="me">My Tasks</SelectItem>
+              <SelectItem value="unassigned">Unassigned</SelectItem>
+              {members?.map((member: any) => (
+                <SelectItem key={member.user_profiles.id} value={member.user_profiles.id}>
+                  {member.user_profiles.full_name || member.user_profiles.email}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {hasPermission('tasks', 'create') && (
+            <Dialog open={isOpen} onOpenChange={setIsOpen}>
+              <DialogTrigger asChild>
+                <Button
+                  style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                  className="text-white hover:opacity-90"
+                  onClick={() => {
+                  setEditingTask(null);
+                  form.reset({
+                    title: '',
+                    description: '',
+                    status: 'Not Started',
+                    due_date: new Date(),
+                    client_id: undefined
+                  });
+                }}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Task
+                </Button>
+              </DialogTrigger>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>
@@ -375,7 +462,7 @@ export default function Tasks() {
                         <FormLabel>Client</FormLabel>
                         <Select
                           onValueChange={field.onChange}
-                          value={field.value}
+                          value={field.value !== null && field.value !== undefined ? String(field.value) : undefined}
                         >
                           <FormControl>
                             <SelectTrigger>
@@ -397,9 +484,41 @@ export default function Tasks() {
                       </FormItem>
                     )}
                   />
+                  <FormField
+                    control={form.control}
+                    name="assigned_to"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Assign To</FormLabel>
+                        <Select
+                          onValueChange={(value) => field.onChange(value === "unassigned" ? null : value)}
+                          value={field.value || "unassigned"}
+                        >
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select a team member" />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value="unassigned">Unassigned</SelectItem>
+                            {members?.map((member: any) => (
+                              <SelectItem
+                                key={member.user_profiles.id}
+                                value={member.user_profiles.id}
+                              >
+                                {member.user_profiles.full_name || member.user_profiles.email}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                   <Button
                     type="submit"
-                    className="w-full"
+                    style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                    className="w-full text-white hover:opacity-90"
                     disabled={createMutation.isPending || updateMutation.isPending}
                   >
                     {editingTask ? 'Update' : 'Create'} Task
@@ -408,6 +527,7 @@ export default function Tasks() {
               </Form>
             </DialogContent>
           </Dialog>
+        )}
         </div>
       </div>
 
@@ -433,6 +553,7 @@ export default function Tasks() {
                 <TableHead>Status</TableHead>
                 <TableHead>Due Date</TableHead>
                 <TableHead>Client</TableHead>
+                <TableHead>Assigned To</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -455,22 +576,35 @@ export default function Tasks() {
                   </TableCell>
                   <TableCell>{task.clients?.name}</TableCell>
                   <TableCell>
+                    {task.user_profiles ? (
+                      <div className="text-sm">
+                        {task.user_profiles.full_name || task.user_profiles.email}
+                      </div>
+                    ) : (
+                      <span className="text-gray-400 text-sm">Unassigned</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
                     <div className="flex gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleEdit(task)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                        onClick={() => deleteMutation.mutate(task.id.toString())}
-                      >
-                        <Trash className="h-4 w-4" />
-                      </Button>
+                      {hasPermission('tasks', 'update') && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleEdit(task)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {hasPermission('tasks', 'delete') && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => deleteMutation.mutate(task.id.toString())}
+                        >
+                          <Trash className="h-4 w-4" />
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>

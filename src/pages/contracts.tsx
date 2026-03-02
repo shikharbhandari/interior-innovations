@@ -8,6 +8,8 @@ import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
+import { useAuth } from "@/contexts/AuthContext";
+import { useBrandColor } from "@/hooks/use-brand-color";
 
 import {
   Table,
@@ -64,6 +66,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { insertContractSchema, insertPaymentSchema, type Contract, type InsertContract, type InsertPayment } from "@/lib/schema";
 
 export default function Contracts() {
+  const { currentOrganization, user, hasPermission } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [isPaymentDialogOpen, setIsPaymentDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
@@ -77,6 +80,9 @@ export default function Contracts() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
 
+  // Get brand color from centralized hook
+  const { brandColor } = useBrandColor();
+
   // Check for status query parameter on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -86,9 +92,16 @@ export default function Contracts() {
     }
   }, []);
 
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, typeFilter, clientFilter, searchQuery]);
+
   const { data: contracts, isLoading: contractsLoading } = useQuery({
-    queryKey: ['contracts', searchQuery, statusFilter, typeFilter, clientFilter, currentPage],
+    queryKey: ['contracts', currentOrganization?.organization_id, searchQuery, statusFilter, typeFilter, clientFilter, currentPage],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       let query = supabase
         .from('contracts')
         .select(`
@@ -111,7 +124,8 @@ export default function Contracts() {
             date,
             type
           )
-        `);
+        `)
+        .eq('organization_id', currentOrganization.organization_id);
 
       // Apply filters
       if (searchQuery) {
@@ -160,45 +174,58 @@ export default function Contracts() {
       // Apply pagination after filtering
       const start = (currentPage - 1) * itemsPerPage;
       return sortedData.slice(start, start + itemsPerPage);
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const { data: clients } = useQuery({
-    queryKey: ['clients'],
+    queryKey: ['clients', currentOrganization?.organization_id],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       const { data, error } = await supabase
         .from('clients')
         .select('id, name')
+        .eq('organization_id', currentOrganization.organization_id)
         .order('name');
       if (error) throw error;
       return data;
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const { data: vendors } = useQuery({
-    queryKey: ['vendors'],
+    queryKey: ['vendors', currentOrganization?.organization_id],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       const { data, error } = await supabase
         .from('vendors')
         .select('id, name')
+        .eq('organization_id', currentOrganization.organization_id)
         .eq('status', 'active')
         .order('name');
       if (error) throw error;
       return data;
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const { data: labors } = useQuery({
-    queryKey: ['labors'],
+    queryKey: ['labors', currentOrganization?.organization_id],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       const { data, error } = await supabase
         .from('labors')
         .select('id, name')
+        .eq('organization_id', currentOrganization.organization_id)
         .eq('status', 'active')
         .order('name');
       if (error) throw error;
       return data;
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const form = useForm<InsertContract>({
@@ -298,6 +325,8 @@ export default function Contracts() {
   // Watch contract_amount and commission_percentage to calculate commission_amount
   const createMutation = useMutation({
     mutationFn: async (values: InsertContract) => {
+      if (!currentOrganization || !user) throw new Error('Not authorized');
+
       console.log('Creating contract with values:', values);
       const { error } = await supabase
         .from('contracts')
@@ -307,12 +336,17 @@ export default function Contracts() {
           commission_percentage: Number(values.commission_percentage),
           commission_amount: Number(values.commission_amount),
           start_date: values.start_date.toISOString(),
-          end_date: values.end_date?.toISOString()
+          end_date: values.end_date?.toISOString(),
+          organization_id: currentOrganization.organization_id,
+          created_by: user.id,
         }]);
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contracts'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-count'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-total-commission'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-total-pending'] });
       setIsOpen(false);
       form.reset();
       toast({
@@ -332,7 +366,7 @@ export default function Contracts() {
 
   const updateMutation = useMutation({
     mutationFn: async (values: InsertContract) => {
-      if (!selectedContract) return;
+      if (!selectedContract || !user) return;
       const { error } = await supabase
         .from('contracts')
         .update({
@@ -341,13 +375,17 @@ export default function Contracts() {
           commission_percentage: Number(values.commission_percentage),
           commission_amount: Number(values.commission_amount),
           start_date: values.start_date.toISOString(),
-          end_date: values.end_date?.toISOString()
+          end_date: values.end_date?.toISOString(),
+          updated_by: user.id,
         })
         .eq('id', selectedContract.id);
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contracts'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-count'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-total-commission'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-total-pending'] });
       setIsOpen(false);
       setSelectedContract(null);
       form.reset();
@@ -367,17 +405,29 @@ export default function Contracts() {
 
   const createPaymentMutation = useMutation({
     mutationFn: async (values: InsertPayment) => {
+      if (!currentOrganization || !user) throw new Error('Not authorized');
+
       const { error } = await supabase
         .from('payments')
         .insert([{
-          ...values,
           amount: Number(values.amount),
-          date: values.date.toISOString()
+          date: values.date.toISOString(),
+          type: values.type,
+          contract_id: values.contract_id || null,
+          client_id: values.client_id || null,
+          description: values.description || null,
+          organization_id: currentOrganization.organization_id,
+          created_by: user.id,
         }]);
+
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contracts'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-count'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-total-commission'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-total-pending'] });
+      queryClient.invalidateQueries({ queryKey: ['payments'] });
       setIsPaymentDialogOpen(false);
       setSelectedContract(null);
       paymentForm.reset();
@@ -405,6 +455,9 @@ export default function Contracts() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contracts'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-count'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-total-commission'] });
+      queryClient.invalidateQueries({ queryKey: ['contracts-total-pending'] });
       setIsDeleteDialogOpen(false);
       setSelectedContract(null);
       toast({
@@ -433,9 +486,12 @@ export default function Contracts() {
   const onPaymentSubmit = (values: InsertPayment) => {
     if (selectedContract) {
       createPaymentMutation.mutate({
-        ...values,
+        amount: values.amount,
+        date: values.date,
+        description: values.description,
         contract_id: selectedContract.id,
-        type: selectedContract.vendor_id ? 'vendor' : 'labor'
+        type: selectedContract.vendor_id ? 'vendor' : 'labor',
+        client_id: null,
       });
     }
   };
@@ -478,8 +534,10 @@ export default function Contracts() {
 
   // Total count for pagination
   const { data: totalCount } = useQuery({
-    queryKey: ['contracts-count', searchQuery, statusFilter, typeFilter, clientFilter],
+    queryKey: ['contracts-count', currentOrganization?.organization_id, searchQuery, statusFilter, typeFilter, clientFilter],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       let query = supabase
         .from('contracts')
         .select(`
@@ -488,7 +546,8 @@ export default function Contracts() {
             amount,
             type
           )
-        `);
+        `)
+        .eq('organization_id', currentOrganization.organization_id);
 
       if (searchQuery) {
         query = query.ilike('title', `%${searchQuery}%`);
@@ -525,17 +584,20 @@ export default function Contracts() {
           return pendingAmount > 0;
         });
       }
-      
+
       return filteredData.length;
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const totalPages = Math.ceil((totalCount || 0) / itemsPerPage);
 
   // Total commission amount with filters
   const { data: totalCommission } = useQuery({
-    queryKey: ['contracts-total-commission', searchQuery, statusFilter, typeFilter, clientFilter],
+    queryKey: ['contracts-total-commission', currentOrganization?.organization_id, searchQuery, statusFilter, typeFilter, clientFilter],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       let query = supabase
         .from('contracts')
         .select(`
@@ -544,7 +606,8 @@ export default function Contracts() {
             amount,
             type
           )
-        `);
+        `)
+        .eq('organization_id', currentOrganization.organization_id);
 
       if (searchQuery) {
         query = query.ilike('title', `%${searchQuery}%`);
@@ -581,15 +644,18 @@ export default function Contracts() {
           return pendingAmount > 0;
         });
       }
-      
+
       return filteredData.reduce((sum, contract) => sum + Number(contract.commission_amount), 0) || 0;
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   // Total pending commission amount with filters
   const { data: totalPendingCommission } = useQuery({
-    queryKey: ['contracts-total-pending', searchQuery, statusFilter, typeFilter, clientFilter],
+    queryKey: ['contracts-total-pending', currentOrganization?.organization_id, searchQuery, statusFilter, typeFilter, clientFilter],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       let query = supabase
         .from('contracts')
         .select(`
@@ -598,7 +664,8 @@ export default function Contracts() {
             amount,
             type
           )
-        `);
+        `)
+        .eq('organization_id', currentOrganization.organization_id);
 
       if (searchQuery) {
         query = query.ilike('title', `%${searchQuery}%`);
@@ -642,7 +709,8 @@ export default function Contracts() {
         const pending = Number(contract.commission_amount) - totalPaid;
         return sum + pending;
       }, 0) || 0;
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const handlePreviousPage = () => {
@@ -661,27 +729,31 @@ export default function Contracts() {
     <div className="p-6 space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Contracts</h1>
-        <Dialog open={isOpen} onOpenChange={setIsOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={() => {
-              setSelectedContract(null);
-              form.reset({
-                client_id: undefined,
-                vendor_id: null,
-                labor_id: null,
-                title: '',
-                description: '',
-                contract_amount: '',
-                commission_percentage: '',
-                commission_amount: '',
-                status: 'active',
-                start_date: new Date(),
-              });
-            }}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Contract
-            </Button>
-          </DialogTrigger>
+        {hasPermission('contracts', 'create') && (
+          <Dialog open={isOpen} onOpenChange={setIsOpen}>
+            <DialogTrigger asChild>
+              <Button
+                style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                className="text-white hover:opacity-90"
+                onClick={() => {
+                setSelectedContract(null);
+                form.reset({
+                  client_id: undefined,
+                  vendor_id: null,
+                  labor_id: null,
+                  title: '',
+                  description: '',
+                  contract_amount: '',
+                  commission_percentage: '',
+                  commission_amount: '',
+                  status: 'active',
+                  start_date: new Date(),
+                });
+              }}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Contract
+              </Button>
+            </DialogTrigger>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>
@@ -924,7 +996,8 @@ export default function Contracts() {
 
                 <Button
                   type="submit"
-                  className="w-full"
+                  style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                  className="w-full text-white hover:opacity-90"
                   disabled={createMutation.isPending || updateMutation.isPending}
                 >
                   {selectedContract ? 'Update' : 'Create'} Contract
@@ -933,6 +1006,7 @@ export default function Contracts() {
             </Form>
           </DialogContent>
         </Dialog>
+        )}
       </div>
 
       <div className="flex flex-col md:flex-row gap-4 items-end">
@@ -996,14 +1070,14 @@ export default function Contracts() {
       </div>
 
       {/* Total Commission Card */}
-      <Card className="border-stone-400" style={{ backgroundColor: 'rgb(174 168 162 / var(--tw-bg-opacity, 1))' }}>
+      <Card className="border-2" style={{ backgroundColor: brandColor, borderColor: brandColor }}>
         <CardContent className="pt-6">
           {statusFilter === 'all' ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Commission Amount</p>
-                  <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                  <p className="text-sm font-medium text-white">Total Commission Amount</p>
+                  <p className="text-3xl font-bold mt-1 text-white">
                     ₹{(totalCommission || 0).toLocaleString()}
                   </p>
                 </div>
@@ -1013,8 +1087,8 @@ export default function Contracts() {
               </div>
               <div className="flex items-center justify-between border-l-0 md:border-l-2 border-white/30 md:pl-6">
                 <div>
-                  <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Pending Commission</p>
-                  <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                  <p className="text-sm font-medium text-white">Total Pending Commission</p>
+                  <p className="text-3xl font-bold mt-1 text-white">
                     ₹{(totalPendingCommission || 0).toLocaleString()}
                   </p>
                 </div>
@@ -1026,8 +1100,8 @@ export default function Contracts() {
           ) : statusFilter === 'pending' ? (
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Pending Commission</p>
-                <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                <p className="text-sm font-medium text-white">Total Pending Commission</p>
+                <p className="text-3xl font-bold mt-1 text-white">
                   ₹{(totalPendingCommission || 0).toLocaleString()}
                 </p>
               </div>
@@ -1038,8 +1112,8 @@ export default function Contracts() {
           ) : (
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Amount Earned</p>
-                <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                <p className="text-sm font-medium text-white">Total Amount Earned</p>
+                <p className="text-3xl font-bold mt-1 text-white">
                   ₹{((totalCommission || 0) - (totalPendingCommission || 0)).toLocaleString()}
                 </p>
               </div>
@@ -1048,7 +1122,7 @@ export default function Contracts() {
               </div>
             </div>
           )}
-          <p className="text-xs mt-4" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+          <p className="text-xs mt-4 text-white">
             Based on {totalCount || 0} contract{(totalCount || 0) !== 1 ? 's' : ''}
           </p>
         </CardContent>
@@ -1145,7 +1219,8 @@ export default function Contracts() {
 
               <Button
                 type="submit"
-                className="w-full"
+                style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                className="w-full text-white hover:opacity-90"
                 disabled={createPaymentMutation.isPending}
               >
                 Add Payment
@@ -1222,34 +1297,40 @@ export default function Contracts() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handlePayment(contract);
-                          }}
-                        >
-                          <IndianRupee className="h-4 w-4 mr-2" />
-                          Update Payment
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleEdit(contract);
-                          }}
-                        >
-                          <Pencil className="h-4 w-4 mr-2" />
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDelete(contract);
-                          }}
-                          className="text-red-600"
-                        >
-                          <Trash className="h-4 w-4 mr-2" />
-                          Delete
-                        </DropdownMenuItem>
+                        {hasPermission('contracts', 'update') && (
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePayment(contract);
+                            }}
+                          >
+                            <IndianRupee className="h-4 w-4 mr-2" />
+                            Update Payment
+                          </DropdownMenuItem>
+                        )}
+                        {hasPermission('contracts', 'update') && (
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEdit(contract);
+                            }}
+                          >
+                            <Pencil className="h-4 w-4 mr-2" />
+                            Edit
+                          </DropdownMenuItem>
+                        )}
+                        {hasPermission('contracts', 'delete') && (
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDelete(contract);
+                            }}
+                            className="text-red-600"
+                          >
+                            <Trash className="h-4 w-4 mr-2" />
+                            Delete
+                          </DropdownMenuItem>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>

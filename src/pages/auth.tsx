@@ -26,13 +26,18 @@ export default function AuthPage() {
     return () => subscription.unsubscribe();
   }, [setLocation]);
 
+  const SUPER_ADMIN_COLOR = '#001D39';
+
   return (
     <div className="min-h-screen w-full flex">
       {/* Left Panel - Branding */}
-      <div className="hidden md:flex md:w-1/2 bg-gradient-to-br from-brand/5 to-brand/20 items-center justify-center p-8">
+      <div
+        className="hidden md:flex md:w-1/2 items-center justify-center p-8"
+        style={{ background: `linear-gradient(135deg, ${SUPER_ADMIN_COLOR}0d, ${SUPER_ADMIN_COLOR}33)` }}
+      >
         <div className="text-center">
-          <h1 className="text-4xl font-light text-brand mb-2">Interior Innovations</h1>
-          <p className="text-xl text-brand/80 font-light">by Manisha Jain</p>
+          <h1 className="text-4xl font-light mb-2" style={{ color: SUPER_ADMIN_COLOR }}>Dezfin</h1>
+          <p className="text-xl font-light" style={{ color: `${SUPER_ADMIN_COLOR}cc` }}>Less spreadsheets. More square feet.</p>
         </div>
       </div>
 
@@ -41,8 +46,8 @@ export default function AuthPage() {
         <Card className="w-full max-w-md shadow-none border-none">
           <CardContent className="pt-6">
             <div className="mb-8 text-center md:hidden">
-              <h1 className="text-2xl font-light text-brand mb-1">Interior Innovations</h1>
-              <p className="text-sm text-brand/80 font-light">by Manisha Jain</p>
+              <h1 className="text-2xl font-light mb-1" style={{ color: SUPER_ADMIN_COLOR }}>Dezfin</h1>
+              <p className="text-sm font-light" style={{ color: `${SUPER_ADMIN_COLOR}cc` }}>Less spreadsheets. More square feet.</p>
             </div>
             <Auth
               supabaseClient={supabase}
@@ -53,15 +58,15 @@ export default function AuthPage() {
                 variables: {
                   default: {
                     colors: {
-                      brand: '#aea8a2',
-                      brandAccent: '#9e978f',
+                      brand: SUPER_ADMIN_COLOR,
+                      brandAccent: '#002d5a',
                     },
                   },
                 },
                 className: {
                   container: 'w-full',
-                  button: 'w-full px-4 py-2.5 text-white bg-brand hover:bg-brand-dark transition-colors',
-                  input: 'w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-brand/20 focus:border-brand',
+                  button: 'w-full px-4 py-2.5 text-white transition-colors',
+                  input: 'w-full px-3 py-2 border rounded-md',
                   label: 'text-sm font-medium text-gray-700',
                 },
               }}

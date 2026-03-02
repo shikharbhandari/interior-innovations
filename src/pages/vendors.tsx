@@ -7,6 +7,8 @@ import { Plus, Pencil, Trash, Search } from "lucide-react";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
+import { useAuth } from "@/contexts/AuthContext";
+import { useBrandColor } from "@/hooks/use-brand-color";
 
 import {
   Table,
@@ -57,21 +59,28 @@ import { insertVendorSchema, type Vendor, type InsertVendor } from "@/lib/schema
 const ITEMS_PER_PAGE = 7;
 
 export default function Vendors() {
+  const { currentOrganization, user, hasPermission } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [vendorToDelete, setVendorToDelete] = useState<Vendor | null>(null);
   const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("active");
   const [currentPage, setCurrentPage] = useState(1);
   const { toast } = useToast();
 
+  // Get brand color from centralized hook
+  const { brandColor } = useBrandColor();
+
   const { data: vendorData, isLoading } = useQuery({
-    queryKey: ['vendors', currentPage, statusFilter],
+    queryKey: ['vendors', currentOrganization?.organization_id, currentPage, statusFilter],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       let query = supabase
         .from('vendors')
-        .select('*', { count: 'exact' });
+        .select('*', { count: 'exact' })
+        .eq('organization_id', currentOrganization.organization_id);
 
       // Apply status filter
       if (statusFilter !== 'all') {
@@ -88,7 +97,8 @@ export default function Vendors() {
 
       if (error) throw error;
       return { data: data as Vendor[], count: count || 0 };
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const filteredVendors = vendorData?.data.filter(vendor =>
@@ -111,13 +121,19 @@ export default function Vendors() {
 
   const createMutation = useMutation({
     mutationFn: async (values: InsertVendor) => {
+      if (!currentOrganization || !user) throw new Error('Not authorized');
+
       const { error } = await supabase
         .from('vendors')
-        .insert([values]);
+        .insert([{
+          ...values,
+          organization_id: currentOrganization.organization_id,
+          created_by: user.id,
+        }]);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vendors'] });
+      queryClient.invalidateQueries({ queryKey: ['vendors', currentOrganization?.organization_id] });
       setIsOpen(false);
       form.reset();
       toast({
@@ -136,15 +152,18 @@ export default function Vendors() {
 
   const updateMutation = useMutation({
     mutationFn: async (values: InsertVendor) => {
-      if (!editingVendor) return;
+      if (!editingVendor || !user) return;
       const { error } = await supabase
         .from('vendors')
-        .update(values)
+        .update({
+          ...values,
+          updated_by: user.id,
+        })
         .eq('id', editingVendor.id);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vendors'] });
+      queryClient.invalidateQueries({ queryKey: ['vendors', currentOrganization?.organization_id] });
       setIsOpen(false);
       setEditingVendor(null);
       form.reset();
@@ -171,7 +190,7 @@ export default function Vendors() {
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vendors'] });
+      queryClient.invalidateQueries({ queryKey: ['vendors', currentOrganization?.organization_id] });
       setDeleteDialogOpen(false);
       setVendorToDelete(null);
       toast({
@@ -217,22 +236,26 @@ export default function Vendors() {
     <div className="p-6 space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Vendors</h1>
-        <Dialog open={isOpen} onOpenChange={setIsOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={() => {
-              setEditingVendor(null);
-              form.reset({
-                name: '',
-                email: '',
-                phone: '',
-                category: '',
-                status: 'active',
-              });
-            }}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Vendor
-            </Button>
-          </DialogTrigger>
+        {hasPermission('vendors', 'create') && (
+          <Dialog open={isOpen} onOpenChange={setIsOpen}>
+            <DialogTrigger asChild>
+              <Button
+                style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                className="text-white hover:opacity-90"
+                onClick={() => {
+                setEditingVendor(null);
+                form.reset({
+                  name: '',
+                  email: '',
+                  phone: '',
+                  category: '',
+                  status: 'active',
+                });
+              }}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Vendor
+              </Button>
+            </DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
@@ -319,7 +342,8 @@ export default function Vendors() {
                 />
                 <Button
                   type="submit"
-                  className="w-full"
+                  style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                  className="w-full text-white hover:opacity-90"
                   disabled={createMutation.isPending || updateMutation.isPending}
                 >
                   {editingVendor ? 'Update' : 'Create'} Vendor
@@ -328,6 +352,7 @@ export default function Vendors() {
             </Form>
           </DialogContent>
         </Dialog>
+        )}
       </div>
 
       <div className="flex items-center space-x-4">
@@ -374,7 +399,7 @@ export default function Vendors() {
               {filteredVendors?.map((vendor) => (
                 <TableRow key={vendor.id}>
                   <TableCell>
-                    <Link href={`/vendors/${vendor.id}`} className="text-primary hover:underline">
+                    <Link href={`/vendors/${vendor.id}`} className="hover:underline" style={{ color: brandColor }}>
                       {vendor.name}
                     </Link>
                   </TableCell>
@@ -391,21 +416,25 @@ export default function Vendors() {
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleEdit(vendor)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                        onClick={() => handleDelete(vendor)}
-                      >
-                        <Trash className="h-4 w-4" />
-                      </Button>
+                      {hasPermission('vendors', 'update') && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleEdit(vendor)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {hasPermission('vendors', 'delete') && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => handleDelete(vendor)}
+                        >
+                          <Trash className="h-4 w-4" />
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>

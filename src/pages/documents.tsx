@@ -8,6 +8,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import type { Document, InsertDocument } from "@/lib/schema";
 import { insertDocumentSchema } from "@/lib/schema";
+import { useAuth } from "@/contexts/AuthContext";
+import { useBrandColor } from "@/hooks/use-brand-color";
 
 import {
   Dialog,
@@ -54,12 +56,16 @@ import { queryClient } from "@/lib/queryClient";
 const BUCKET_NAME = 'documents';
 
 export default function Documents() {
+  const { currentOrganization, user, hasPermission } = useAuth();
   const { toast } = useToast();
   const [isOpen, setIsOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [documentToDelete, setDocumentToDelete] = useState<Document | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+
+  // Get brand color from centralized hook
+  const { brandColor } = useBrandColor();
 
   const form = useForm<InsertDocument>({
     resolver: zodResolver(insertDocumentSchema),
@@ -71,20 +77,26 @@ export default function Documents() {
   });
 
   const { data: documents, isLoading } = useQuery({
-    queryKey: ['documents'],
+    queryKey: ['documents', currentOrganization?.organization_id],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       const { data, error } = await supabase
         .from('documents')
         .select('*')
+        .eq('organization_id', currentOrganization.organization_id)
         .order('uploaded_at', { ascending: false });
 
       if (error) throw error;
       return data as Document[];
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const uploadMutation = useMutation({
     mutationFn: async (values: InsertDocument & { file: File }) => {
+      if (!currentOrganization || !user) throw new Error('Not authorized');
+
       setUploading(true);
       try {
         // Upload file to Supabase Storage
@@ -109,6 +121,8 @@ export default function Documents() {
             name: values.name,
             category: values.category,
             file_path: filePath,
+            organization_id: currentOrganization.organization_id,
+            created_by: user.id,
           }]);
 
         if (dbError) {
@@ -121,7 +135,7 @@ export default function Documents() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['documents'] });
+      queryClient.invalidateQueries({ queryKey: ['documents', currentOrganization?.organization_id] });
       setIsOpen(false);
       form.reset();
       toast({
@@ -159,7 +173,7 @@ export default function Documents() {
       if (dbError) throw dbError;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['documents'] });
+      queryClient.invalidateQueries({ queryKey: ['documents', currentOrganization?.organization_id] });
       setDeleteDialogOpen(false);
       setDocumentToDelete(null);
       toast({
@@ -170,7 +184,7 @@ export default function Documents() {
     onError: (error: Error) => {
       toast({
         variant: "destructive",
-        title: "Error deleting document",
+        title: "Error",
         description: error.message,
       });
     }
@@ -199,7 +213,7 @@ export default function Documents() {
       console.error('Download error:', error);
       toast({
         variant: "destructive",
-        title: "Error downloading document",
+        title: "Error",
         description: error instanceof Error ? error.message : "Failed to download document",
       });
     }
@@ -242,13 +256,17 @@ export default function Documents() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Documents</h1>
-        <Dialog open={isOpen} onOpenChange={setIsOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="h-4 w-4 mr-2" />
-              Upload Document
-            </Button>
-          </DialogTrigger>
+        {hasPermission('documents', 'create') && (
+          <Dialog open={isOpen} onOpenChange={setIsOpen}>
+            <DialogTrigger asChild>
+              <Button
+                style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                className="text-white hover:opacity-90"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Upload Document
+              </Button>
+            </DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Upload Document</DialogTitle>
@@ -291,7 +309,12 @@ export default function Documents() {
                   </FormControl>
                   <FormMessage />
                 </FormItem>
-                <Button type="submit" disabled={uploading}>
+                <Button
+                  type="submit"
+                  style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                  className="text-white hover:opacity-90"
+                  disabled={uploading}
+                >
                   {uploading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                   Upload
                 </Button>
@@ -299,6 +322,7 @@ export default function Documents() {
             </Form>
           </DialogContent>
         </Dialog>
+        )}
       </div>
 
       {/* Search input */}
@@ -332,20 +356,24 @@ export default function Documents() {
                 </TableCell>
                 <TableCell>
                   <div className="flex gap-2">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleDownload(doc)}
-                    >
-                      <Download className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleDelete(doc)}
-                    >
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
+                    {hasPermission('documents', 'read') && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleDownload(doc)}
+                      >
+                        <Download className="h-4 w-4" />
+                      </Button>
+                    )}
+                    {hasPermission('documents', 'delete') && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleDelete(doc)}
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    )}
                   </div>
                 </TableCell>
               </TableRow>

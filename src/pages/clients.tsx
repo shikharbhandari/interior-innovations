@@ -7,6 +7,8 @@ import { Plus, Pencil, Trash, Search, IndianRupee } from "lucide-react";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
+import { useAuth } from "@/contexts/AuthContext";
+import { useBrandColor } from "@/hooks/use-brand-color";
 
 import {
   Table,
@@ -57,6 +59,7 @@ import { insertClientSchema, type Client, type InsertClient } from "@/lib/schema
 const ITEMS_PER_PAGE = 7;
 
 export default function Clients() {
+  const { currentOrganization, user, hasPermission } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -64,9 +67,12 @@ export default function Clients() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("active");
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
+
+  // Get brand color from centralized hook
+  const { brandColor } = useBrandColor();
 
   // Check for status query parameter on mount
   useEffect(() => {
@@ -79,12 +85,20 @@ export default function Clients() {
     }
   }, []);
 
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, paymentStatusFilter, searchQuery]);
+
   const { data: clientData, isLoading } = useQuery({
-    queryKey: ['clients', statusFilter],
+    queryKey: ['clients', currentOrganization?.organization_id, statusFilter],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       let query = supabase
         .from('clients')
-        .select('*');
+        .select('*')
+        .eq('organization_id', currentOrganization.organization_id);
 
       // Apply status filter
       if (statusFilter !== 'all') {
@@ -95,37 +109,81 @@ export default function Clients() {
 
       if (error) throw error;
       return data as Client[];
-    }
+    },
+    enabled: !!currentOrganization,
   });
 
   const { data: paymentsData } = useQuery({
-    queryKey: ['payments'],
+    queryKey: ['payments', currentOrganization?.organization_id],
     queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+
       const { data, error } = await supabase
         .from('payments')
         .select('*')
-      
+        .eq('organization_id', currentOrganization.organization_id);
+
       if (error) throw error;
       return data;
-    }
+    },
+    enabled: !!currentOrganization,
   });
+
+  const { data: lineItemsData } = useQuery({
+    queryKey: ['client-line-items-all', currentOrganization?.organization_id],
+    queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+      const { data, error } = await supabase
+        .from('client_line_items')
+        .select('*, line_item_payments(amount)')
+        .eq('organization_id', currentOrganization.organization_id);
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!currentOrganization,
+  });
+
+  const { data: designerFeesData } = useQuery({
+    queryKey: ['designer-fees-all', currentOrganization?.organization_id],
+    queryFn: async () => {
+      if (!currentOrganization) throw new Error('No organization selected');
+      const { data, error } = await supabase
+        .from('designer_fees')
+        .select('client_id, billing_amount, designer_fee_payments(amount)')
+        .eq('organization_id', currentOrganization.organization_id);
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!currentOrganization,
+  });
+
+  const getClientFinancials = (clientId: number) => {
+    const items = (lineItemsData || []).filter((item: any) => item.client_id === clientId && !item.is_legacy);
+    const received = (paymentsData || [])
+      .filter((p: any) => p.client_id === clientId && p.type === 'client')
+      .reduce((s: number, p: any) => s + Number(p.amount), 0);
+    const lineItemsOwed = items.reduce((s: number, item: any) => s + Number(item.billing_amount || 0), 0);
+    const clientDesignerFees = (designerFeesData || []).filter((f: any) => f.client_id === clientId);
+    const totalDesignerFee = clientDesignerFees.reduce((s: number, f: any) => s + Number(f.billing_amount || 0), 0);
+    const totalDesignerFeePaid = clientDesignerFees.reduce((s: number, f: any) =>
+      s + (f.designer_fee_payments || []).reduce((ps: number, p: any) => ps + Number(p.amount), 0), 0);
+    const designerFeePending = totalDesignerFee - totalDesignerFeePaid;
+    // Finance hub formula: received - BM billed - designer fees paid
+    const clientBalance = received - lineItemsOwed - totalDesignerFeePaid;
+    return { totalReceived: received, totalOwed: lineItemsOwed + totalDesignerFee, totalDesignerFee, designerFeePending, clientBalance };
+  };
 
   const allFilteredClients = clientData?.filter(client => {
     const matchesSearch = client.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (client.email && client.email.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (client.phone && client.phone.toLowerCase().includes(searchQuery.toLowerCase()));
-    
+
     if (!matchesSearch) return false;
-    
-    // Calculate pending amount
-    const pendingAmount = Number(client.contract_amount || 0) - (paymentsData || [])
-      .filter(p => p.client_id === client.id)
-      .reduce((pSum, p) => pSum + Number(p.amount), 0);
-    
-    // Apply payment status filter
-    if (paymentStatusFilter === 'pending' && pendingAmount <= 0) return false;
-    if (paymentStatusFilter === 'completed' && pendingAmount > 0) return false;
-    
+
+    const { clientBalance } = getClientFinancials(client.id);
+    if (paymentStatusFilter === 'pending' && clientBalance >= 0) return false;
+    if (paymentStatusFilter === 'completed' && clientBalance < 0) return false;
+
     return true;
   });
 
@@ -138,31 +196,30 @@ export default function Clients() {
 
   // Calculate totals based on payment status filter
   const calculateTotals = () => {
-    if (!clientData || !paymentsData) return { totalAmount: 0, pendingAmount: 0, earnedAmount: 0 };
+    if (!clientData) return { totalAmount: 0, pendingAmount: 0, earnedAmount: 0 };
 
     let clientsToCalculate = clientData;
 
-    // Filter clients based on payment status if needed
     if (paymentStatusFilter !== 'all') {
       clientsToCalculate = clientData.filter(client => {
-        const pendingAmount = Number(client.contract_amount || 0) - (paymentsData || [])
-          .filter(p => p.client_id === client.id)
-          .reduce((pSum, p) => pSum + Number(p.amount), 0);
-        
-        if (paymentStatusFilter === 'pending') return pendingAmount > 0;
-        if (paymentStatusFilter === 'completed') return pendingAmount <= 0;
+        const { clientBalance } = getClientFinancials(client.id);
+        if (paymentStatusFilter === 'pending') return clientBalance < 0;
+        if (paymentStatusFilter === 'completed') return clientBalance >= 0;
         return true;
       });
     }
 
-    const totalAmount = clientsToCalculate.reduce((sum, client) => sum + Number(client.contract_amount || 0), 0);
-    const earnedAmount = clientsToCalculate.reduce((sum, client) => {
-      const paid = (paymentsData || [])
-        .filter(p => p.client_id === client.id)
-        .reduce((pSum, p) => pSum + Number(p.amount), 0);
-      return sum + paid;
+    const totalAmount = clientsToCalculate.reduce((sum, client) => {
+      return sum + getClientFinancials(client.id).totalOwed;
     }, 0);
-    const pendingAmount = totalAmount - earnedAmount;
+    const earnedAmount = clientsToCalculate.reduce((sum, client) => {
+      return sum + getClientFinancials(client.id).totalReceived;
+    }, 0);
+    const pendingAmount = clientsToCalculate.reduce((sum, client) => {
+      const { totalOwed, totalReceived } = getClientFinancials(client.id);
+      const owed = totalOwed - totalReceived;
+      return sum + (owed > 0 ? owed : 0);
+    }, 0);
 
     return { totalAmount, pendingAmount, earnedAmount };
   };
@@ -175,7 +232,6 @@ export default function Clients() {
       name: '',
       email: '',
       phone: '',
-      contract_amount: '',
       address: '',
       notes: '',
       status: 'active',
@@ -184,11 +240,14 @@ export default function Clients() {
 
   const createMutation = useMutation({
     mutationFn: async (values: InsertClient) => {
+      if (!currentOrganization || !user) throw new Error('Not authorized');
+
       const { data, error } = await supabase
         .from('clients')
         .insert([{
           ...values,
-          contract_amount: Number(values.contract_amount),
+          organization_id: currentOrganization.organization_id,
+          created_by: user.id,
         }])
         .select();
 
@@ -197,6 +256,7 @@ export default function Clients() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['payments'] });
       setIsOpen(false);
       form.reset();
       toast({
@@ -215,11 +275,11 @@ export default function Clients() {
 
   const updateMutation = useMutation({
     mutationFn: async (values: InsertClient) => {
-      if (!editingClient) return;
+      if (!editingClient || !user) return;
 
       const updateData = {
         ...values,
-        contract_amount: Number(values.contract_amount),
+        updated_by: user.id,
       };
 
       const { data, error } = await supabase
@@ -233,6 +293,7 @@ export default function Clients() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['payments'] });
       setIsOpen(false);
       setEditingClient(null);
       form.reset();
@@ -286,10 +347,7 @@ export default function Clients() {
 
   const handleEdit = (client: Client) => {
     setEditingClient(client);
-    form.reset({
-      ...client,
-      contract_amount: client.contract_amount?.toString() || '',
-    });
+    form.reset({ ...client });
     setIsOpen(true);
   };
 
@@ -310,24 +368,27 @@ export default function Clients() {
     <div className="p-6 space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Clients</h1>
-        <Dialog open={isOpen} onOpenChange={setIsOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={() => {
-              setEditingClient(null);
-              form.reset({
-                name: '',
-                email: '',
-                phone: '',
-                contract_amount: '',
-                address: '',
-                notes: '',
-                status: 'active',
-              });
-            }}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Client
-            </Button>
-          </DialogTrigger>
+        {hasPermission('clients', 'create') && (
+          <Dialog open={isOpen} onOpenChange={setIsOpen}>
+            <DialogTrigger asChild>
+              <Button
+                style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                className="text-white hover:opacity-90"
+                onClick={() => {
+                setEditingClient(null);
+                form.reset({
+                  name: '',
+                  email: '',
+                  phone: '',
+                  address: '',
+                  notes: '',
+                  status: 'active',
+                });
+              }}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Client
+              </Button>
+            </DialogTrigger>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
@@ -377,23 +438,6 @@ export default function Clients() {
                 />
                 <FormField
                   control={form.control}
-                  name="contract_amount"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Contract Amount (₹)</FormLabel>
-                      <FormControl>
-                        <Input
-                          type="number"
-                          step="0.01"
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
                   name="address"
                   render={({ field }) => (
                     <FormItem>
@@ -424,7 +468,8 @@ export default function Clients() {
                 />
                 <Button
                   type="submit"
-                  className="w-full"
+                  style={{ backgroundColor: brandColor, borderColor: brandColor }}
+                  className="w-full text-white hover:opacity-90"
                   disabled={createMutation.isPending || updateMutation.isPending}
                 >
                   {editingClient ? 'Update' : 'Create'} Client
@@ -433,6 +478,7 @@ export default function Clients() {
             </Form>
           </DialogContent>
         </Dialog>
+        )}
       </div>
 
       <div className="flex items-center space-x-4">
@@ -474,14 +520,14 @@ export default function Clients() {
       </div>
 
       {/* Total Amount Card */}
-      <Card className="border-stone-400" style={{ backgroundColor: 'rgb(174 168 162 / var(--tw-bg-opacity, 1))' }}>
+      <Card className="border-2" style={{ backgroundColor: brandColor, borderColor: brandColor }}>
         <CardContent className="pt-6">
           {paymentStatusFilter === 'all' ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Contract Amount</p>
-                  <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                  <p className="text-sm font-medium text-white">Total Receivable</p>
+                  <p className="text-3xl font-bold mt-1 text-white">
                     ₹{totalAmount.toLocaleString()}
                   </p>
                 </div>
@@ -491,8 +537,8 @@ export default function Clients() {
               </div>
               <div className="flex items-center justify-between border-l-0 md:border-l-2 border-white/30 md:pl-6">
                 <div>
-                  <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Pending Amount</p>
-                  <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                  <p className="text-sm font-medium text-white">Total Outstanding</p>
+                  <p className="text-3xl font-bold mt-1 text-white">
                     ₹{pendingAmount.toLocaleString()}
                   </p>
                 </div>
@@ -504,7 +550,7 @@ export default function Clients() {
           ) : paymentStatusFilter === 'pending' ? (
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Pending Amount</p>
+                <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Outstanding</p>
                 <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
                   ₹{pendingAmount.toLocaleString()}
                 </p>
@@ -516,8 +562,8 @@ export default function Clients() {
           ) : (
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm font-medium" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>Total Amount Earned</p>
-                <p className="text-3xl font-bold mt-1" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+                <p className="text-sm font-medium text-white">Total Received</p>
+                <p className="text-3xl font-bold mt-1 text-white">
                   ₹{earnedAmount.toLocaleString()}
                 </p>
               </div>
@@ -526,7 +572,7 @@ export default function Clients() {
               </div>
             </div>
           )}
-          <p className="text-xs mt-4" style={{ color: 'rgb(255 255 255 / var(--tw-text-opacity, 1))' }}>
+          <p className="text-xs mt-4 text-white">
             Based on {totalFilteredCount} client{totalFilteredCount !== 1 ? 's' : ''}
           </p>
         </CardContent>
@@ -542,8 +588,9 @@ export default function Clients() {
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Phone</TableHead>
-                <TableHead>Contract Amount</TableHead>
-                <TableHead>Pending Amount</TableHead>
+                <TableHead>Designer Fee</TableHead>
+                <TableHead>Designer Fee Pending</TableHead>
+                <TableHead>Client Balance</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
@@ -557,10 +604,21 @@ export default function Clients() {
                 >
                   <TableCell>{client.name}</TableCell>
                   <TableCell>{client.phone}</TableCell>
-                  <TableCell>₹{client.contract_amount?.toLocaleString()}</TableCell>
-                  <TableCell>₹{Number(client.contract_amount || 0) - (paymentsData || [])
-                                              .filter(p => p.client_id === client.id)
-                                              .reduce((pSum, p) => pSum + Number(p.amount), 0)}</TableCell>
+                  <TableCell>₹{getClientFinancials(client.id).totalDesignerFee.toLocaleString()}</TableCell>
+                  <TableCell>
+                    {(() => {
+                      const { designerFeePending } = getClientFinancials(client.id);
+                      return <span className={designerFeePending > 0 ? "text-red-500" : "text-gray-400"}>₹{designerFeePending.toLocaleString()}</span>;
+                    })()}
+                  </TableCell>
+                  <TableCell>
+                    {(() => {
+                      const { clientBalance } = getClientFinancials(client.id);
+                      if (clientBalance < 0) return <span className="text-red-500">−₹{Math.abs(clientBalance).toLocaleString()}</span>;
+                      if (clientBalance > 0) return <span className="text-green-600">₹{clientBalance.toLocaleString()}</span>;
+                      return <span className="text-gray-400">₹0</span>;
+                    })()}
+                  </TableCell>
                   <TableCell>
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                       client.status === 'active'
@@ -572,27 +630,31 @@ export default function Clients() {
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-2">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleEdit(client);
-                        }}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDelete(client);
-                        }}
-                      >
-                        <Trash className="h-4 w-4" />
-                      </Button>
+                      {hasPermission('clients', 'update') && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEdit(client);
+                          }}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {hasPermission('clients', 'delete') && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(client);
+                          }}
+                        >
+                          <Trash className="h-4 w-4" />
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                 </TableRow>
