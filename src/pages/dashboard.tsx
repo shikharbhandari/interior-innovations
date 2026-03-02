@@ -1,7 +1,8 @@
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { TrendingUp, Clock, IndianRupee, Wallet, Target, Users, Truck } from "lucide-react";
+import { TrendingUp, Clock, IndianRupee, Wallet, Target, Users } from "lucide-react";
 import { format } from "date-fns";
 import { Link, useLocation } from "wouter";
 import { queryClient } from "@/lib/queryClient";
@@ -31,6 +32,7 @@ import {
 } from "@/components/ui/select";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const TASK_STATUSES = [
   "Not Started",
@@ -154,6 +156,7 @@ export default function Dashboard() {
   const { currentOrganization, user } = useAuth();
   const { toast } = useToast();
   const [, setLocation] = useLocation();
+  const [markupModalOpen, setMarkupModalOpen] = useState(false);
 
   const { brandColor, brandColor2, brandColor3 } = useBrandColor();
 
@@ -174,6 +177,7 @@ export default function Dashboard() {
         leadsResult,
         leadStagesResult,
         taskStatusesResult,
+        designerFeesResult,
       ] = await Promise.all([
         supabase.from('clients').select('count', { count: 'exact' }).eq('organization_id', currentOrganization.organization_id).single(),
         supabase.from('clients').select('count', { count: 'exact' }).eq('organization_id', currentOrganization.organization_id).eq('status', 'active').single(),
@@ -190,11 +194,12 @@ export default function Dashboard() {
           .limit(10),
         supabase
           .from('client_line_items')
-          .select(`*, line_item_payments (amount)`)
+          .select(`*, clients(name), line_item_payments (amount)`)
           .eq('organization_id', currentOrganization.organization_id),
         supabase.from('leads').select('id, stage_id').eq('organization_id', currentOrganization.organization_id),
         supabase.from('lead_stages').select('id, is_won, is_lost').eq('organization_id', currentOrganization.organization_id),
         supabase.from('tasks').select('status').eq('organization_id', currentOrganization.organization_id),
+        supabase.from('designer_fees').select('billing_amount, designer_fee_payments(amount)').eq('organization_id', currentOrganization.organization_id),
       ]);
 
       // Commission & payments
@@ -205,6 +210,44 @@ export default function Dashboard() {
         return sum + (Number(item.billing_amount || 0) - Number(item.actual_amount || 0));
       }, 0);
 
+      const pendingMarkup = lineItems.reduce((sum: number, item: any) => {
+        if (item.type === 'fee') return sum;
+        const paid = (item.line_item_payments || []).reduce((s: number, p: any) => s + Number(p.amount), 0);
+        if (item.is_legacy) {
+          return sum + Math.max(0, Number(item.commission_amount || 0) - paid);
+        }
+        const markup = Number(item.billing_amount || 0) - Number(item.actual_amount || 0);
+        const markupCollected = Math.max(0, paid - Number(item.actual_amount || 0));
+        return sum + Math.max(0, markup - markupCollected);
+      }, 0);
+
+      // Per-item pending markup for the drill-down modal
+      type PendingMarkupItem = { clientId: number; clientName: string; description: string; totalMarkup: number; paid: number; pending: number };
+      const pendingMarkupItems: PendingMarkupItem[] = lineItems
+        .filter((item: any) => item.type !== 'fee')
+        .map((item: any) => {
+          const paid = (item.line_item_payments || []).reduce((s: number, p: any) => s + Number(p.amount), 0);
+          let totalMarkup: number;
+          let pending: number;
+          if (item.is_legacy) {
+            totalMarkup = Number(item.commission_amount || 0);
+            pending = Math.max(0, totalMarkup - paid);
+          } else {
+            totalMarkup = Number(item.billing_amount || 0) - Number(item.actual_amount || 0);
+            const markupCollected = Math.max(0, paid - Number(item.actual_amount || 0));
+            pending = Math.max(0, totalMarkup - markupCollected);
+          }
+          return {
+            clientId: item.client_id,
+            clientName: item.clients?.name || 'Unknown',
+            description: item.description || item.name || 'Line Item',
+            totalMarkup,
+            paid,
+            pending,
+          };
+        })
+        .filter((item: PendingMarkupItem) => item.pending > 0);
+
       const totalClientReceived = (paymentsResult.data || [])
         .filter((p: any) => p.type === 'client')
         .reduce((sum: number, p: any) => sum + Number(p.amount), 0);
@@ -213,6 +256,13 @@ export default function Dashboard() {
         return sum + Number(item.billing_amount || 0);
       }, 0);
       const pendingClientAmount = totalOwed - totalClientReceived;
+
+      // Designer fees totals
+      const designerFeesData = designerFeesResult.data || [];
+      const totalDesignerFees = designerFeesData.reduce((sum: number, f: any) => sum + Number(f.billing_amount || 0), 0);
+      const designerFeesPaid = designerFeesData.reduce((sum: number, f: any) =>
+        sum + (f.designer_fee_payments || []).reduce((s: number, p: any) => s + Number(p.amount), 0), 0);
+      const pendingDesignerFees = totalDesignerFees - designerFeesPaid;
 
       // Payment trends — sorted chronologically, last 6 months
       const trendsMap: Record<string, { client: number; vendor: number; labor: number; sortKey: string }> = {};
@@ -262,8 +312,12 @@ export default function Dashboard() {
         recentTasks: recentTasksResult.data || [],
         paymentTrends,
         totalCommission,
+        pendingMarkup,
+        pendingMarkupItems,
         totalClientReceived,
         pendingClientAmount,
+        totalDesignerFees,
+        pendingDesignerFees,
         totalLeads,
         wonLeads,
         conversionRate,
@@ -366,32 +420,26 @@ export default function Dashboard() {
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Link href="/clients">
-          <StatsCard title="Total Clients"  value={stats?.totalClients || 0}  icon={Users}  brandColor={brandColor} />
-        </Link>
         <StatsCard
-          title="Active Clients" value={stats?.activeClients || 0} icon={Users}
-          onClick={() => setLocation('/clients?status=active')} brandColor={brandColor}
-        />
-        <Link href="/vendors">
-          <StatsCard title="Total Vendors" value={stats?.totalVendors || 0} icon={Truck} brandColor={brandColor} />
-        </Link>
-        <Link href="/labors">
-          <StatsCard title="Total Labors" value={stats?.totalLabors || 0} icon={Users} brandColor={brandColor} />
-        </Link>
-        <StatsCard
-          title="Commission Earned"
-          value={`₹${(stats?.totalCommission || 0).toLocaleString('en-IN')}`}
-          subValue="Total commission across all projects"
-          icon={IndianRupee}
+          title="Total Clients"
+          value={stats?.totalClients || 0}
+          subValue={`Active: ${stats?.activeClients || 0}`}
+          icon={Users}
           onClick={() => setLocation('/clients')}
           brandColor={brandColor}
         />
         <StatsCard
-          title="Client Balance"
-          value={`₹${Math.abs(stats?.pendingClientAmount || 0).toLocaleString('en-IN')}`}
-          subValue={`Received: ₹${(stats?.totalClientReceived || 0).toLocaleString('en-IN')}`}
-          subValue2={(stats?.pendingClientAmount || 0) > 0 ? `Clients owe: ₹${(stats?.pendingClientAmount || 0).toLocaleString('en-IN')}` : 'Fully covered'}
+          title="Markup"
+          value={`₹${(stats?.totalCommission || 0).toLocaleString('en-IN')}`}
+          subValue={`Pending: ₹${(stats?.pendingMarkup || 0).toLocaleString('en-IN')}`}
+          icon={IndianRupee}
+          onClick={() => setMarkupModalOpen(true)}
+          brandColor={brandColor}
+        />
+        <StatsCard
+          title="Designer Fees"
+          value={`₹${(stats?.totalDesignerFees || 0).toLocaleString('en-IN')}`}
+          subValue={`Pending: ₹${(stats?.pendingDesignerFees || 0).toLocaleString('en-IN')}`}
           icon={Wallet}
           onClick={() => setLocation('/clients')}
           brandColor={brandColor}
@@ -614,6 +662,62 @@ export default function Dashboard() {
           )}
         </CardContent>
       </Card>
+
+      {/* Pending Markup Drill-down Modal */}
+      <Dialog open={markupModalOpen} onOpenChange={setMarkupModalOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <IndianRupee className="h-5 w-5" style={{ color: brandColor }} />
+              Pending Markup
+              <span className="text-sm font-normal text-gray-400 ml-1">
+                ₹{(stats?.pendingMarkup || 0).toLocaleString('en-IN')} total
+              </span>
+            </DialogTitle>
+          </DialogHeader>
+          <ScrollArea className="flex-1 pr-2">
+            {(stats?.pendingMarkupItems?.length ?? 0) === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-8">No pending markup</p>
+            ) : (
+              (() => {
+                const byClient: Record<string, { clientName: string; clientId: number; items: typeof stats.pendingMarkupItems; total: number }> = {};
+                for (const item of stats!.pendingMarkupItems) {
+                  const key = String(item.clientId);
+                  if (!byClient[key]) byClient[key] = { clientName: item.clientName, clientId: item.clientId, items: [], total: 0 };
+                  byClient[key].items.push(item);
+                  byClient[key].total += item.pending;
+                }
+                return Object.values(byClient)
+                  .sort((a, b) => b.total - a.total)
+                  .map(group => (
+                    <div key={group.clientId} className="mb-5">
+                      <div className="flex items-center justify-between mb-2">
+                        <Link href={`/clients/${group.clientId}`} onClick={() => setMarkupModalOpen(false)}>
+                          <span className="font-semibold text-sm hover:underline" style={{ color: brandColor }}>
+                            {group.clientName}
+                          </span>
+                        </Link>
+                        <span className="text-sm font-semibold">
+                          ₹{group.total.toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                      <div className="space-y-1 pl-2 border-l-2" style={{ borderColor: `${brandColor}40` }}>
+                        {group.items.map((item, i) => (
+                          <div key={i} className="flex items-center justify-between text-sm py-1">
+                            <span className="text-gray-600 truncate mr-4">{item.description}</span>
+                            <span className="text-gray-800 font-medium shrink-0">
+                              ₹{item.pending.toLocaleString('en-IN')}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ));
+              })()
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

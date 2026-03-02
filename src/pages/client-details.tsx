@@ -45,7 +45,7 @@ export default function ClientDetails() {
   const [, setLocation] = useLocation();
   const [isEditClientOpen, setIsEditClientOpen] = useState(false);
   const { toast } = useToast();
-  const { currentOrganization, user } = useAuth();
+  const { currentOrganization, user, isSuperAdmin } = useAuth();
   const { brandColor, brandColor2, brandColor3 } = useBrandColor();
 
   // Project stage dialog state
@@ -70,47 +70,50 @@ export default function ClientDetails() {
     },
   });
 
+  // Super admin may not have currentOrganization — fall back to the client's own org
+  const effectiveOrgId = currentOrganization?.organization_id ?? (isSuperAdmin ? client?.organization_id : undefined);
+
   const { data: projectStages = [], isLoading: stagesLoading } = useQuery({
-    queryKey: ['project-stages', clientId, currentOrganization?.organization_id],
+    queryKey: ['project-stages', clientId, effectiveOrgId],
     queryFn: async () => {
-      if (!currentOrganization) throw new Error('No organization');
+      if (!effectiveOrgId) throw new Error('No organization');
       const { data, error } = await supabase
         .from('project_stages')
         .select('*')
         .eq('client_id', clientId)
-        .eq('organization_id', currentOrganization.organization_id)
+        .eq('organization_id', effectiveOrgId)
         .order('display_order');
       if (error) throw error;
       return data as any[];
     },
-    enabled: !!currentOrganization,
+    enabled: !!effectiveOrgId,
     refetchOnMount: 'always',
   });
 
   const { data: orgProjectStages = [], isLoading: orgStagesLoading, error: orgStagesError } = useQuery({
-    queryKey: ['org-project-stages-templates', currentOrganization?.organization_id],
+    queryKey: ['org-project-stages-templates', effectiveOrgId],
     queryFn: async () => {
-      if (!currentOrganization) throw new Error('No organization');
+      if (!effectiveOrgId) throw new Error('No organization');
       const { data, error } = await supabase
         .from('organization_project_stages')
         .select('*')
-        .eq('organization_id', currentOrganization.organization_id)
+        .eq('organization_id', effectiveOrgId)
         .order('display_order');
       if (error) throw error;
       return data as any[];
     },
-    enabled: !!currentOrganization,
+    enabled: !!effectiveOrgId,
   });
 
   const { data: designerFeesTotals } = useQuery({
-    queryKey: ['designer-fees-totals', clientId, currentOrganization?.organization_id],
+    queryKey: ['designer-fees-totals', clientId, effectiveOrgId],
     queryFn: async () => {
-      if (!currentOrganization) throw new Error('No organization');
+      if (!effectiveOrgId) throw new Error('No organization');
       const { data, error } = await supabase
         .from('designer_fees')
         .select(`billing_amount, designer_fee_payments (amount)`)
         .eq('client_id', clientId)
-        .eq('organization_id', currentOrganization.organization_id);
+        .eq('organization_id', effectiveOrgId);
       if (error) throw error;
       const fees = data || [];
       const totalFee = fees.reduce((s: number, f: any) => s + Number(f.billing_amount || 0), 0);
@@ -118,7 +121,7 @@ export default function ClientDetails() {
         s + (f.designer_fee_payments || []).reduce((ps: number, p: any) => ps + Number(p.amount), 0), 0);
       return { totalFee, totalPaid };
     },
-    enabled: !!currentOrganization,
+    enabled: !!effectiveOrgId,
     refetchOnMount: 'always',
   });
 
@@ -175,15 +178,15 @@ export default function ClientDetails() {
   });
 
   const invalidateStages = () =>
-    queryClient.invalidateQueries({ queryKey: ['project-stages', clientId, currentOrganization?.organization_id] });
+    queryClient.invalidateQueries({ queryKey: ['project-stages', clientId, effectiveOrgId] });
 
   const initializeStagesMutation = useMutation({
     mutationFn: async () => {
-      if (!currentOrganization || !user) throw new Error('Not authorized');
+      if (!effectiveOrgId || !user) throw new Error('Not authorized');
       if (orgProjectStages.length === 0) throw new Error('No org stage templates defined. Add stages in Settings first.');
       const rows = orgProjectStages.map((s: any) => ({
         client_id: Number(clientId),
-        organization_id: currentOrganization.organization_id,
+        organization_id: effectiveOrgId,
         name: s.name,
         display_order: s.display_order,
         fee_percentage: s.fee_percentage,
@@ -242,7 +245,7 @@ export default function ClientDetails() {
 
   const saveProjectStageMutation = useMutation({
     mutationFn: async () => {
-      if (!currentOrganization || !user) throw new Error('Not authorized');
+      if (!effectiveOrgId || !user) throw new Error('Not authorized');
       if (!pStageName.trim()) throw new Error('Stage name is required');
       if (editingPStage) {
         const { error } = await supabase
@@ -254,7 +257,7 @@ export default function ClientDetails() {
         const maxOrder = projectStages.length > 0 ? Math.max(...projectStages.map((s: any) => s.display_order)) : -1;
         const { error } = await supabase.from('project_stages').insert({
           client_id: Number(clientId),
-          organization_id: currentOrganization.organization_id,
+          organization_id: effectiveOrgId,
           name: pStageName.trim(),
           fee_percentage: Number(pStageFee) || 0,
           target_date: pStageDate || null,

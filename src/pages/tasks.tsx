@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { Plus, Pencil, Trash, Search } from "lucide-react";
+import { Plus, Pencil, Trash, Search, ChevronDown } from "lucide-react";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
@@ -34,6 +34,13 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -54,7 +61,10 @@ const TASK_STATUSES = [
   "Cancelled"
 ] as const;
 
-type TaskWithClient = Task & { clients: Client };
+type TaskWithClient = Task & {
+  clients: Client | null;
+  user_profiles: { id: string; email: string | null; full_name: string | null } | null;
+};
 
 export default function Tasks() {
   const { currentOrganization, user, hasPermission } = useAuth();
@@ -345,7 +355,7 @@ export default function Tasks() {
               <SelectItem value="all">All Tasks</SelectItem>
               <SelectItem value="me">My Tasks</SelectItem>
               <SelectItem value="unassigned">Unassigned</SelectItem>
-              {members?.map((member: any) => (
+              {members?.filter((m: any) => m.user_profiles).map((member: any) => (
                 <SelectItem key={member.user_profiles.id} value={member.user_profiles.id}>
                   {member.user_profiles.full_name || member.user_profiles.email}
                 </SelectItem>
@@ -415,7 +425,7 @@ export default function Tasks() {
                         <FormLabel>Status</FormLabel>
                         <Select
                           onValueChange={field.onChange}
-                          defaultValue={field.value}
+                          value={field.value}
                         >
                           <FormControl>
                             <SelectTrigger>
@@ -501,7 +511,7 @@ export default function Tasks() {
                           </FormControl>
                           <SelectContent>
                             <SelectItem value="unassigned">Unassigned</SelectItem>
-                            {members?.map((member: any) => (
+                            {members?.filter((m: any) => m.user_profiles).map((member: any) => (
                               <SelectItem
                                 key={member.user_profiles.id}
                                 value={member.user_profiles.id}
@@ -585,27 +595,38 @@ export default function Tasks() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <div className="flex gap-2">
-                      {hasPermission('tasks', 'update') && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
                         <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleEdit(task)}
+                          variant="outline"
+                          size="sm"
+                          className="flex items-center gap-1"
+                          onClick={(e) => e.stopPropagation()}
                         >
-                          <Pencil className="h-4 w-4" />
+                          Actions <ChevronDown className="h-3 w-3" />
                         </Button>
-                      )}
-                      {hasPermission('tasks', 'delete') && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                          onClick={() => deleteMutation.mutate(task.id.toString())}
-                        >
-                          <Trash className="h-4 w-4" />
-                        </Button>
-                      )}
-                    </div>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        {hasPermission('tasks', 'update') && (
+                          <DropdownMenuItem
+                            onClick={(e) => { e.stopPropagation(); handleEdit(task); }}
+                          >
+                            <Pencil className="h-4 w-4 mr-2" /> Edit
+                          </DropdownMenuItem>
+                        )}
+                        {hasPermission('tasks', 'delete') && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="text-red-600 focus:text-red-600"
+                              onClick={(e) => { e.stopPropagation(); deleteMutation.mutate(task.id.toString()); }}
+                            >
+                              <Trash className="h-4 w-4 mr-2" /> Delete
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </TableCell>
                 </TableRow>
               ))}

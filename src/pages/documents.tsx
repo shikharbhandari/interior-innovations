@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Download, Loader2, Search, Trash2 } from "lucide-react";
+import { Plus, Download, Loader2, Search, Trash2, ChevronDown } from "lucide-react";
 import { format } from "date-fns";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -50,6 +50,13 @@ import {
 } from "@/components/ui/table";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { queryClient } from "@/lib/queryClient";
 
@@ -355,26 +362,38 @@ export default function Documents() {
                   {doc.uploaded_at && format(new Date(doc.uploaded_at), 'MMM dd, yyyy')}
                 </TableCell>
                 <TableCell>
-                  <div className="flex gap-2">
-                    {hasPermission('documents', 'read') && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
                       <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleDownload(doc)}
+                        variant="outline"
+                        size="sm"
+                        className="flex items-center gap-1"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        <Download className="h-4 w-4" />
+                        Actions <ChevronDown className="h-3 w-3" />
                       </Button>
-                    )}
-                    {hasPermission('documents', 'delete') && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleDelete(doc)}
-                      >
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
-                    )}
-                  </div>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      {hasPermission('documents', 'read') && (
+                        <DropdownMenuItem
+                          onClick={(e) => { e.stopPropagation(); handleDownload(doc); }}
+                        >
+                          <Download className="h-4 w-4 mr-2" /> Download
+                        </DropdownMenuItem>
+                      )}
+                      {hasPermission('documents', 'delete') && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            className="text-red-600 focus:text-red-600"
+                            onClick={(e) => { e.stopPropagation(); handleDelete(doc); }}
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" /> Delete
+                          </DropdownMenuItem>
+                        </>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </TableCell>
               </TableRow>
             ))}

@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { Plus, Pencil, Trash, Search, IndianRupee } from "lucide-react";
+import { Plus, Pencil, Trash, Trash2, Search, IndianRupee, ChevronDown, Eye } from "lucide-react";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
@@ -45,6 +45,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Pagination,
@@ -59,11 +66,13 @@ import { insertClientSchema, type Client, type InsertClient } from "@/lib/schema
 const ITEMS_PER_PAGE = 7;
 
 export default function Clients() {
-  const { currentOrganization, user, hasPermission } = useAuth();
+  const { currentOrganization, user, hasPermission, isAdmin, isSuperAdmin } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
+  const [hardDeleteDialogOpen, setHardDeleteDialogOpen] = useState(false);
+  const [clientToHardDelete, setClientToHardDelete] = useState<Client | null>(null);
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
@@ -337,6 +346,32 @@ export default function Clients() {
     }
   });
 
+  const hardDeleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase
+        .from('clients')
+        .delete()
+        .eq('id', id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      setHardDeleteDialogOpen(false);
+      setClientToHardDelete(null);
+      toast({
+        title: "Client deleted",
+        description: "Client has been permanently deleted.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: error.message,
+      });
+    }
+  });
+
   const onSubmit = (values: InsertClient) => {
     if (editingClient) {
       updateMutation.mutate(values);
@@ -358,6 +393,11 @@ export default function Clients() {
   const handleDelete = (client: Client) => {
     setClientToDelete(client);
     setDeleteDialogOpen(true);
+  };
+
+  const handleHardDelete = (client: Client) => {
+    setClientToHardDelete(client);
+    setHardDeleteDialogOpen(true);
   };
 
   if (isLoading) {
@@ -629,33 +669,66 @@ export default function Clients() {
                     </span>
                   </TableCell>
                   <TableCell>
-                    <div className="flex gap-2">
-                      {hasPermission('clients', 'update') && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
                         <Button
-                          variant="ghost"
-                          size="icon"
+                          variant="outline"
+                          size="sm"
+                          className="flex items-center gap-1"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          Actions <ChevronDown className="h-3 w-3" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleEdit(client);
+                            handleViewDetails(client.id);
                           }}
                         >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                      )}
-                      {hasPermission('clients', 'delete') && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDelete(client);
-                          }}
-                        >
-                          <Trash className="h-4 w-4" />
-                        </Button>
-                      )}
-                    </div>
+                          <Eye className="h-4 w-4 mr-2" /> View Details
+                        </DropdownMenuItem>
+                        {hasPermission('clients', 'update') && (
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEdit(client);
+                            }}
+                          >
+                            <Pencil className="h-4 w-4 mr-2" /> Edit
+                          </DropdownMenuItem>
+                        )}
+                        {hasPermission('clients', 'delete') && client.status === 'active' && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="text-red-600 focus:text-red-600"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDelete(client);
+                              }}
+                            >
+                              <Trash className="h-4 w-4 mr-2" /> Mark as Inactive
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                        {client.status === 'inactive' && (isAdmin || isSuperAdmin) && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="text-red-800 focus:text-red-800"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleHardDelete(client);
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4 mr-2" /> Delete Permanently
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </TableCell>
                 </TableRow>
               ))}
@@ -730,6 +803,33 @@ export default function Clients() {
               disabled={deleteMutation.isPending}
             >
               Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={hardDeleteDialogOpen} onOpenChange={setHardDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Permanently Delete Client</DialogTitle>
+            <DialogDescription>
+              This will permanently delete <strong>{clientToHardDelete?.name}</strong> and all associated data. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setHardDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (clientToHardDelete) {
+                  hardDeleteMutation.mutate(clientToHardDelete.id);
+                }
+              }}
+              disabled={hardDeleteMutation.isPending}
+            >
+              Delete Permanently
             </Button>
           </DialogFooter>
         </DialogContent>
